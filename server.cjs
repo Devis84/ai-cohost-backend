@@ -10,12 +10,12 @@ app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 3001;
 
-// 🔥 OPENAI
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+console.log("🔑 API KEY:", process.env.OPENAI_API_KEY ? "PRESENTE" : "MANCANTE");
 
-// 🔥 WEBHOOK VERIFICA (GET)
+// 🔐 VERIFICA WEBHOOK
 app.get("/webhook", (req, res) => {
   const VERIFY_TOKEN = "my_verify_token";
 
@@ -23,46 +23,55 @@ app.get("/webhook", (req, res) => {
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  console.log("🔍 Verifica webhook...");
-
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ WEBHOOK VERIFICATO DA META");
+    console.log("✅ WEBHOOK VERIFICATO");
     return res.status(200).send(challenge);
   } else {
-    console.log("❌ TOKEN NON VALIDO");
     return res.sendStatus(403);
   }
 });
 
-// 🔥 WEBHOOK MESSAGGI (POST)
+// 📩 RICEZIONE MESSAGGI
 app.post("/webhook", async (req, res) => {
-  console.log("📩 WEBHOOK POST RICEVUTO:");
+  console.log("📩 WEBHOOK:");
   console.log(JSON.stringify(req.body, null, 2));
 
   try {
-    const messages =
-      req.body.entry?.[0]?.changes?.[0]?.value?.messages;
+    const value = req.body.entry?.[0]?.changes?.[0]?.value;
 
-    if (!messages) {
-      console.log("⚠️ Nessun messaggio trovato");
+    if (!value) {
+      console.log("❌ Nessun value");
       return res.sendStatus(200);
     }
 
-    const message = messages[0];
+    const message = value.messages?.[0];
+
+    if (!message) {
+      console.log("⚠️ Nessun messaggio (probabile status update)");
+      return res.sendStatus(200);
+    }
+
     const from = message.from;
     const text = message.text?.body;
+
+    if (!text) {
+      console.log("⚠️ Messaggio senza testo");
+      return res.sendStatus(200);
+    }
 
     console.log("👤 Da:", from);
     console.log("💬 Testo:", text);
 
-    // 🔥 CHIAMATA OPENAI
-    const aiResponse = await openai.chat.completions.create({
+    // 🤖 OPENAI
+    console.log("🚀 CHIAMO OPENAI...");
+
+const aiResponse = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
           content:
-            "Sei un co-host Airbnb professionale. Rispondi in modo chiaro, cordiale e utile.",
+            "Sei un assistente Airbnb professionale. Rispondi in modo cordiale e utile.",
         },
         {
           role: "user",
@@ -72,12 +81,13 @@ app.post("/webhook", async (req, res) => {
     });
 
     const reply = aiResponse.choices[0].message.content;
+console.log("✅ OPENAI RISPOSTO");
 
-    console.log("🤖 Risposta AI:", reply);
+    console.log("🤖 AI:", reply);
 
-    // 🔥 INVIO RISPOSTA WHATSAPP
+    // 📤 INVIO RISPOSTA
     await axios.post(
-      "https://graph.facebook.com/v18.0/+35677088080/messages",
+      `https://graph.facebook.com/v18.0/1101846813008656/messages,
       {
         messaging_product: "whatsapp",
         to: from,
@@ -85,11 +95,34 @@ app.post("/webhook", async (req, res) => {
       },
       {
         headers: {
-          Authorization: "EAAVvcnWyukgBRLZBR0TVaDZB7jxn0KTNvy6X1jEpFLHPouMWZCuAxDDXuZB258uOpolf9N8ehwxlFKdAe3E5VF0GfU3YYhVTVEt6SWlNoplmvzfVdEZCkdc4pvZCBTXlAddYwDRJUIjFjx0QjS8qRXKf2PSEFsPQMfM6caTbnKWPyoDIRCuZCo9tBVCdukZBjRbFDCfM5H0MpjsjV3c61SxNCuhqx9S4GyqUzKtinkuEWqesWRCAJoykstkiJlETEkXJCLlLetiRoVFukT82AHZBtrQZDZD",
+          Authorization: await axios.post(
+  "https://graph.facebook.com/v18.0/1101846813008656/messages",
+  {
+    messaging_product: "whatsapp",
+    to: from,
+    text: { body: aiReply },
+  },
+  {
+    headers: {
+      Authorization: "Bearer EAAVvcnWyukgBRLZBR0TVaDZB7jxn0KTNvy6X1jEpFLHPouMWZCuAxDDXuZB258uOpolf9N8ehwxlFKdAe3E5VF0GfU3YYhVTVEt6SWlNoplmvzfVdEZCkdc4pvZCBTXlAddYwDRJUIjFjx0QjS8qRXKf2PSEFsPQMfM6caTbnKWPyoDIRCuZCo9tBVCdukZBjRbFDCfM5H0MpjsjV3c61SxNCuhqx9S4GyqUzKtinkuEWqesWRCAJoykstkiJlETEkXJCLlLetiRoVFukT82AHZBtrQZDZD",
+      "Content-Type": "application/json",
+    },
+  }
+);
           "Content-Type": "application/json",
         },
       }
     );
 
+    console.log("📤 Risposta inviata");
+
     res.sendStatus(200);
+  } catch (error) {
+    console.error("❌ ERRORE:", error.response?.data || error.message);
+    res.sendStatus(500);
   }
+});
+
+app.listen(PORT, () => {
+  console.log("🚀 Server running on port " + PORT);
+});
