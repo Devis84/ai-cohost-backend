@@ -1,19 +1,14 @@
-if (!message) return res.sendStatus(200);
-
-const from = message.from;
-const text = message.text?.body;
-
-console.log("👤", from);
-console.log("💬", text);
+const from = msg.from;
+const text = msg.text?.body;
 
 if (!text) return res.sendStatus(200);
 
-// salva utente
+// SALVATAGGIO UTENTE
 await supabase.from("conversations").insert([
   { phone: from, role: "guest", message: text },
 ]);
 
-// recupera storico
+// STORICO
 const { data: history } = await supabase
   .from("conversations")
   .select("*")
@@ -24,21 +19,18 @@ const { data: history } = await supabase
 const messages = [
   {
     role: "system",
-    content:
-      "Sei un assistente Airbnb. Risposte brevi, utili e concrete.",
+    content: "Sei un assistente Airbnb, risposte brevi e utili.",
   },
 ];
 
 if (history) {
-  for (const msg of history) {
+  for (const h of history) {
     messages.push({
-      role: mapRole(msg.role),
-      content: msg.message,
+      role: mapRole(h.role),
+      content: h.message,
     });
   }
 }
-
-console.log("🚀 OpenAI");
 
 const ai = await openai.chat.completions.create({
   model: "gpt-4o-mini",
@@ -47,14 +39,12 @@ const ai = await openai.chat.completions.create({
 
 const reply = ai.choices[0].message.content;
 
-console.log("🤖", reply);
-
-// salva risposta
+// SALVATAGGIO AI
 await supabase.from("conversations").insert([
   { phone: from, role: "assistant", message: reply },
 ]);
 
-// invia whatsapp
+// INVIO WHATSAPP
 await axios.post(
   `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
   {
@@ -69,7 +59,5 @@ await axios.post(
     },
   }
 );
-
-console.log("📤 SENT");
 
 res.sendStatus(200);
