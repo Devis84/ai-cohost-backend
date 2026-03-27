@@ -1,11 +1,21 @@
-const express = require("express");
+import express from "express";
+import bodyParser from "body-parser";
+import axios from "axios";
+import dotenv from "dotenv";
+import OpenAI from "openai";
+
+dotenv.config();
 
 const app = express();
-app.use(express.json());
+app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 3001;
 
-// 🔐 VERIFICA WEBHOOK
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// 🔐 VERIFY WEBHOOK
 app.get("/webhook", (req, res) => {
   const VERIFY_TOKEN = "my_verify_token";
 
@@ -13,37 +23,86 @@ app.get("/webhook", (req, res) => {
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  console.log("🔍 Verifica webhook");
-
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ VERIFICATO");
+  if (mode && token === VERIFY_TOKEN) {
+    console.log("✅ WEBHOOK VERIFICATO");
     return res.status(200).send(challenge);
   } else {
-    console.log("❌ ERRORE TOKEN");
     return res.sendStatus(403);
   }
 });
 
 // 📩 RICEZIONE MESSAGGI
-app.post("/webhook", (req, res) => {
-  console.log("📩 WEBHOOK RICEVUTO");
-  console.log(JSON.stringify(req.body, null, 2));
+app.post("/webhook", async (req, res) => {
+  console.log("📩 WEBHOOK POST RICEVUTO:");
 
-  const message =
-    req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  try {
+    const body = req.body;
 
-  if (!message) {
-    console.log("⚠️ Nessun messaggio (status o altro)");
-    return res.sendStatus(200);
+    const message =
+      body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+
+    if (!message) {
+      console.log("⚠️ Nessun messaggio trovato");
+      return res.sendStatus(200);
+    }
+
+    const from = message.from;
+    const text = message.text?.body;
+
+    console.log("👤 Da:", from);
+    console.log("💬 Testo:", text);
+
+    if (!text) {
+      return res.sendStatus(200);
+    }
+
+    // 🤖 OPENAI
+    console.log("🚀 CHIAMO OPENAI...");
+
+    const aiResponse = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "Sei un assistente Airbnb professionale. Rispondi in modo cordiale e utile.",
+        },
+        {
+          role: "user",
+          content: text,
+        },
+      ],
+    });
+
+    const reply = aiResponse.choices[0].message.content;
+
+    console.log("🤖 AI:", reply);
+
+    // 📤 INVIO RISPOSTA WHATSAPP
+    await axios.post(
+      `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to: from,
+        text: { body: reply },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    console.log("📤 RISPOSTA INVIATA");
+
+    res.sendStatus(200);
+  } catch (error) {
+    console.error("❌ ERRORE:", error.response?.data || error.message);
+    res.sendStatus(500);
   }
-
-  const text = message.text?.body;
-
-  console.log("💬 TESTO:", text);
-
-  res.sendStatus(200);
 });
 
 app.listen(PORT, () => {
-  console.log("🚀 Server running on port " + PORT);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
