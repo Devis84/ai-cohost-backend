@@ -64,7 +64,7 @@ app.post("/webhook", async (req, res) => {
         {
           role: "system",
           content:
-            "Sei un assistente Airbnb professionale. Rispondi in modo cordiale e utile.",
+            "Sei un assistente per un host Airbnb. Rispondi come se stessi aiutando un ospite reale. Dai risposte concrete, brevi e utili. Se ti chiedono prezzi o disponibilità, invita a fornire le date. Non dare risposte generiche o teoriche.",
         },
         {
           role: "user",
