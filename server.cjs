@@ -22,14 +22,14 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
 // =========================
-// ✅ ROOT TEST
+// ROOT
 // =========================
 app.get("/", (req, res) => {
   res.send("OK");
 });
 
 // =========================
-// ✅ META VERIFICATION
+// VERIFY
 // =========================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -45,7 +45,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // =========================
-// 📩 WEBHOOK POST
+// WEBHOOK
 // =========================
 app.post("/webhook", async (req, res) => {
   console.log("📩 WEBHOOK POST RICEVUTO");
@@ -70,9 +70,7 @@ app.post("/webhook", async (req, res) => {
 
     if (!text) return res.sendStatus(200);
 
-    // =========================
-    // 💾 SALVA MESSAGGIO UTENTE
-    // =========================
+    // 💾 SALVA UTENTE
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -81,15 +79,15 @@ app.post("/webhook", async (req, res) => {
       },
     ]);
 
-    // =========================
-    // 📚 PRENDI STORICO
-    // =========================
-    const { data: history } = await supabase
+    // 📚 STORICO
+    const { data } = await supabase
       .from("conversations")
       .select("*")
       .eq("phone", from)
       .order("created_at", { ascending: true })
       .limit(10);
+
+    const history = data || [];
 
     const messages = [
       {
@@ -114,9 +112,7 @@ app.post("/webhook", async (req, res) => {
 
     console.log("🤖 AI:", reply);
 
-    // =========================
-    // 💾 SALVA RISPOSTA AI
-    // =========================
+    // 💾 SALVA AI
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -125,9 +121,7 @@ app.post("/webhook", async (req, res) => {
       },
     ]);
 
-    // =========================
-    // 📤 INVIA WHATSAPP
-    // =========================
+    // 📤 WHATSAPP
     await axios.post(
       `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
       {
@@ -147,13 +141,13 @@ app.post("/webhook", async (req, res) => {
 
     res.sendStatus(200);
   } catch (error) {
-    console.error("❌ ERRORE:", error.response?.data || error.message);
+    console.error("❌ ERRORE:", error.message);
     res.sendStatus(500);
   }
 });
 
 // =========================
-// 🚀 START SERVER
+// START
 // =========================
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
