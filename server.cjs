@@ -1,26 +1,36 @@
+require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const OpenAI = require("openai");
+const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 app.use(express.json());
 
 // 🔐 ENV
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
+
 const VERIFY_TOKEN = "my_verify_token";
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// 🤖 OpenAI
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
+// =========================
+// ✅ ROOT TEST
+// =========================
+app.get("/", (req, res) => {
+  res.send("OK");
 });
 
-// 🧠 MEMORIA
-const conversations = {};
-const processedMessages = new Set();
-
-// 🔍 VERIFY
+// =========================
+// ✅ META VERIFICATION
+// =========================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -28,80 +38,96 @@ app.get("/webhook", (req, res) => {
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
     console.log("✅ WEBHOOK VERIFICATO");
-    return res.status(200).send(challenge);
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
   }
-  return res.sendStatus(403);
 });
 
-// 📩 WEBHOOK
+// =========================
+// 📩 WEBHOOK POST
+// =========================
 app.post("/webhook", async (req, res) => {
   console.log("📩 WEBHOOK POST RICEVUTO");
 
   try {
-    const message =
-      req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    const entry = req.body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
 
-    if (!message || !message.text) {
-      console.log("⚠️ Nessun messaggio valido");
+    const message = value?.messages?.[0];
+
+    if (!message) {
+      console.log("⚠️ Nessun messaggio");
       return res.sendStatus(200);
     }
-
-    const messageId = message.id;
-
-    // 🚫 BLOCCA DUPLICATI
-    if (processedMessages.has(messageId)) {
-      console.log("⚠️ Messaggio già processato");
-      return res.sendStatus(200);
-    }
-
-    processedMessages.add(messageId);
 
     const from = message.from;
-    const text = message.text.body;
+    const text = message.text?.body;
 
     console.log("👤 Da:", from);
     console.log("💬 Testo:", text);
 
-    // 🧠 CREA MEMORIA
-    if (!conversations[from]) {
-      conversations[from] = [];
-    }
+    if (!text) return res.sendStatus(200);
 
-    // ➕ USER
-    conversations[from].push({
-      role: "user",
-      content: text,
-    });
+    // =========================
+    // 💾 SALVA MESSAGGIO UTENTE
+    // =========================
+    await supabase.from("conversations").insert([
+      {
+        phone: from,
+        role: "guest",
+        message: text,
+      },
+    ]);
 
-    // ✂️ LIMITE
-    conversations[from] = conversations[from].slice(-10);
+    // =========================
+    // 📚 PRENDI STORICO
+    // =========================
+    const { data: history } = await supabase
+      .from("conversations")
+      .select("*")
+      .eq("phone", from)
+      .order("created_at", { ascending: true })
+      .limit(10);
 
-    console.log("🧠 Memoria:", conversations[from]);
+    const messages = [
+      {
+        role: "system",
+        content:
+          "Sei un assistente per un host Airbnb. Rispondi come se stessi aiutando un ospite reale. Dai risposte concrete, brevi e utili. Se ti chiedono prezzi o disponibilità, invita a fornire le date.",
+      },
+      ...history.map((msg) => ({
+        role: msg.role,
+        content: msg.message,
+      })),
+    ];
 
-    // 🤖 AI
+    console.log("🚀 CHIAMO OPENAI...");
+
     const aiResponse = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            "Sei un assistente Airbnb. Rispondi come un host reale. Dai prezzi indicativi (es. 100-120€) e chiedi sempre le date. Risposte brevi e concrete.",
-        },
-        ...conversations[from],
-      ],
+      messages: messages,
     });
 
     const reply = aiResponse.choices[0].message.content;
 
     console.log("🤖 AI:", reply);
 
-    // ➕ SALVA AI
-    conversations[from].push({
-      role: "assistant",
-      content: reply,
-    });
+    // =========================
+    // 💾 SALVA RISPOSTA AI
+    // =========================
+    await supabase.from("conversations").insert([
+      {
+        phone: from,
+        role: "assistant",
+        message: reply,
+      },
+    ]);
 
-    // 📤 INVIO
+    // =========================
+    // 📤 INVIA WHATSAPP
+    // =========================
     await axios.post(
       `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
       {
@@ -126,9 +152,10 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// 🚀 START
-const PORT = process.env.PORT || 10000;
-
+// =========================
+// 🚀 START SERVER
+// =========================
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
