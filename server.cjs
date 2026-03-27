@@ -1,98 +1,83 @@
 const express = require("express");
-const bodyParser = require("body-parser");
 const axios = require("axios");
-require("dotenv").config();
 const OpenAI = require("openai");
 
 const app = express();
-app.use(bodyParser.json());
+app.use(express.json());
 
-const PORT = process.env.PORT || 3001;
+// 🔐 ENV
+const VERIFY_TOKEN = "my_verify_token";
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
+// 🤖 OpenAI
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: OPENAI_API_KEY,
 });
 
-// ===== VERIFY WEBHOOK =====
-app.get("/webhook", (req, res) => {
-  const VERIFY_TOKEN = "my_verify_token";
+// 🧠 MEMORIA IN RAM
+const conversations = {};
 
+// 🔍 WEBHOOK VERIFICA
+app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode && token === VERIFY_TOKEN) {
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
     console.log("✅ WEBHOOK VERIFICATO");
-    res.status(200).send(challenge);
+    return res.status(200).send(challenge);
   } else {
-    res.sendStatus(403);
+    return res.sendStatus(403);
   }
 });
 
-// ===== RICEZIONE MESSAGGI =====
+// 📩 WEBHOOK RICEZIONE
 app.post("/webhook", async (req, res) => {
   console.log("📩 WEBHOOK POST RICEVUTO");
 
   try {
-    const body = req.body;
-
     const message =
-      body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+      req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
-    if (!message) {
-      console.log("⚠️ Nessun messaggio trovato");
+    if (!message || !message.text) {
+      console.log("⚠️ Nessun messaggio valido");
       return res.sendStatus(200);
     }
 
     const from = message.from;
-    const text = message.text?.body;
+    const text = message.text.body;
 
     console.log("👤 Da:", from);
     console.log("💬 Testo:", text);
 
-    if (!text) {
-      console.log("⚠️ Messaggio senza testo");
-      return res.sendStatus(200);
+    // 🧠 CREA MEMORIA SE NON ESISTE
+    if (!conversations[from]) {
+      conversations[from] = [];
     }
 
-    // ===== OPENAI =====
-    console.log("🚀 CHIAMO OPENAI...");
+    // ➕ AGGIUNGI MESSAGGIO UTENTE
+    conversations[from].push({
+      role: "user",
+      content: text,
+    });
 
+    // ✂️ LIMITA MEMORIA (ultimi 10 messaggi)
+    conversations[from] = conversations[from].slice(-10);
+
+    console.log("🧠 Conversazione:", conversations[from]);
+
+    // 🤖 CHIAMATA OPENAI CON CONTEXTO
     const aiResponse = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content: `
-Sei l'assistente WhatsApp di un appartamento Airbnb.
-
-REGOLE:
-- Devi SEMPRE dare una risposta concreta
-- Se ti chiedono il prezzo, NON dire "dipende"
-- Dai SEMPRE un range realistico (es: 80€-120€ a notte)
-- Poi chiedi le date per confermare
-
-STILE:
-- Breve
-- Naturale
-- Umano
-- Come un host reale
-
-ESEMPIO:
-Domanda: "quanto costa una notte?"
-Risposta:
-"Di solito siamo tra 90€ e 120€ a notte 😊 Dimmi le date e ti confermo il prezzo preciso!"
-
-IMPORTANTE:
-- NON dare risposte teoriche
-- NON parlare in generale di Airbnb
-- Rispondi come se fosse la TUA casa
-`,
+          content:
+            "Sei un assistente per un host Airbnb. Rispondi in modo naturale, breve e utile. Dai informazioni concrete. Se parlano di prezzi, dai una stima realistica (es. 100-120€) e chiedi le date.",
         },
-        {
-          role: "user",
-          content: text,
-        },
+        ...conversations[from],
       ],
     });
 
@@ -100,9 +85,15 @@ IMPORTANTE:
 
     console.log("🤖 AI:", reply);
 
-    // ===== INVIO RISPOSTA =====
+    // ➕ SALVA RISPOSTA AI
+    conversations[from].push({
+      role: "assistant",
+      content: reply,
+    });
+
+    // 📤 INVIO WHATSAPP
     await axios.post(
-      `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
+      `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: "whatsapp",
         to: from,
@@ -110,7 +101,7 @@ IMPORTANTE:
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
           "Content-Type": "application/json",
         },
       }
@@ -125,7 +116,9 @@ IMPORTANTE:
   }
 });
 
-// ===== START SERVER =====
+// 🚀 SERVER
+const PORT = process.env.PORT || 10000;
+
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
