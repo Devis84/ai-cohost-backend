@@ -7,7 +7,6 @@ const { createClient } = require("@supabase/supabase-js");
 const app = express();
 app.use(express.json());
 
-// 🔐 ENV
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
@@ -21,41 +20,27 @@ const VERIFY_TOKEN = "my_verify_token";
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// =========================
 // ROOT
-// =========================
-app.get("/", (req, res) => {
-  res.send("OK");
-});
+app.get("/", (req, res) => res.send("OK"));
 
-// =========================
 // VERIFY
-// =========================
 app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ WEBHOOK VERIFICATO");
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
+  if (
+    req.query["hub.mode"] === "subscribe" &&
+    req.query["hub.verify_token"] === VERIFY_TOKEN
+  ) {
+    return res.status(200).send(req.query["hub.challenge"]);
   }
+  res.sendStatus(403);
 });
 
-// =========================
 // WEBHOOK
-// =========================
 app.post("/webhook", async (req, res) => {
   console.log("📩 WEBHOOK POST RICEVUTO");
 
   try {
-    const entry = req.body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
-
-    const message = value?.messages?.[0];
+    const message =
+      req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
     if (!message) {
       console.log("⚠️ Nessun messaggio");
@@ -70,22 +55,37 @@ app.post("/webhook", async (req, res) => {
 
     if (!text) return res.sendStatus(200);
 
-    // 💾 SALVA UTENTE
-    await supabase.from("conversations").insert([
-      {
-        phone: from,
-        role: "guest",
-        message: text,
-      },
-    ]);
+    // =====================
+    // 💾 SALVATAGGIO DEBUG
+    // =====================
+    const { data: insertUser, error: insertUserError } =
+      await supabase.from("conversations").insert([
+        {
+          phone: from,
+          role: "guest",
+          message: text,
+        },
+      ]);
 
+    if (insertUserError) {
+      console.error("❌ SUPABASE INSERT USER ERROR:", insertUserError);
+    } else {
+      console.log("✅ Salvato messaggio utente");
+    }
+
+    // =====================
     // 📚 STORICO
-    const { data } = await supabase
+    // =====================
+    const { data, error } = await supabase
       .from("conversations")
       .select("*")
       .eq("phone", from)
       .order("created_at", { ascending: true })
       .limit(10);
+
+    if (error) {
+      console.error("❌ SUPABASE FETCH ERROR:", error);
+    }
 
     const history = data || [];
 
@@ -93,7 +93,7 @@ app.post("/webhook", async (req, res) => {
       {
         role: "system",
         content:
-          "Sei un assistente per un host Airbnb. Rispondi come se stessi aiutando un ospite reale. Dai risposte concrete, brevi e utili. Se ti chiedono prezzi o disponibilità, invita a fornire le date.",
+          "Sei un assistente per un host Airbnb. Dai risposte concrete e realistiche.",
       },
       ...history.map((msg) => ({
         role: msg.role,
@@ -105,23 +105,34 @@ app.post("/webhook", async (req, res) => {
 
     const aiResponse = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: messages,
+      messages,
     });
 
     const reply = aiResponse.choices[0].message.content;
 
     console.log("🤖 AI:", reply);
 
-    // 💾 SALVA AI
-    await supabase.from("conversations").insert([
-      {
-        phone: from,
-        role: "assistant",
-        message: reply,
-      },
-    ]);
+    // =====================
+    // 💾 SALVA RISPOSTA
+    // =====================
+    const { error: insertAIError } =
+      await supabase.from("conversations").insert([
+        {
+          phone: from,
+          role: "assistant",
+          message: reply,
+        },
+      ]);
 
+    if (insertAIError) {
+      console.error("❌ SUPABASE INSERT AI ERROR:", insertAIError);
+    } else {
+      console.log("✅ Salvata risposta AI");
+    }
+
+    // =====================
     // 📤 WHATSAPP
+    // =====================
     await axios.post(
       `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
       {
@@ -140,16 +151,13 @@ app.post("/webhook", async (req, res) => {
     console.log("📤 RISPOSTA INVIATA");
 
     res.sendStatus(200);
-  } catch (error) {
-    console.error("❌ ERRORE:", error.message);
+  } catch (err) {
+    console.error("❌ ERRORE GENERALE:", err.message);
     res.sendStatus(500);
   }
 });
 
-// =========================
-// START
-// =========================
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+app.listen(PORT, () =>
+  console.log(`🚀 Server running on port ${PORT}`)
+);
