@@ -15,7 +15,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// 🔐 VERIFY WEBHOOK
+// ===== VERIFY WEBHOOK =====
 app.get("/webhook", (req, res) => {
   const VERIFY_TOKEN = "my_verify_token";
 
@@ -25,15 +25,15 @@ app.get("/webhook", (req, res) => {
 
   if (mode && token === VERIFY_TOKEN) {
     console.log("✅ WEBHOOK VERIFICATO");
-    return res.status(200).send(challenge);
+    res.status(200).send(challenge);
   } else {
-    return res.sendStatus(403);
+    res.sendStatus(403);
   }
 });
 
-// 📩 RICEZIONE MESSAGGI
+// ===== RICEZIONE MESSAGGI =====
 app.post("/webhook", async (req, res) => {
-  console.log("📩 WEBHOOK POST RICEVUTO:");
+  console.log("📩 WEBHOOK POST RICEVUTO");
 
   try {
     const body = req.body;
@@ -53,10 +53,11 @@ app.post("/webhook", async (req, res) => {
     console.log("💬 Testo:", text);
 
     if (!text) {
+      console.log("⚠️ Messaggio senza testo");
       return res.sendStatus(200);
     }
 
-    // 🤖 OPENAI
+    // ===== OPENAI =====
     console.log("🚀 CHIAMO OPENAI...");
 
     const aiResponse = await openai.chat.completions.create({
@@ -78,7 +79,7 @@ app.post("/webhook", async (req, res) => {
 
     console.log("🤖 AI:", reply);
 
-    // 📤 INVIO RISPOSTA WHATSAPP
+    // ===== INVIO RISPOSTA =====
     await axios.post(
       `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
@@ -103,6 +104,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
+// ===== START SERVER =====
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
