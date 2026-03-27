@@ -1,26 +1,17 @@
-if (!message) {
-  console.log("⚠️ Nessun messaggio");
-  return res.sendStatus(200);
-}
+if (!message) return res.sendStatus(200);
 
 const from = message.from;
 const text = message.text?.body;
 
-console.log("👤 Da:", from);
-console.log("💬 Testo:", text);
+console.log("👤", from);
+console.log("💬", text);
 
 if (!text) return res.sendStatus(200);
 
-// salva messaggio utente
+// salva utente
 await supabase.from("conversations").insert([
-  {
-    phone: from,
-    role: "guest",
-    message: text,
-  },
+  { phone: from, role: "guest", message: text },
 ]);
-
-console.log("✅ Salvato messaggio utente");
 
 // recupera storico
 const { data: history } = await supabase
@@ -28,46 +19,42 @@ const { data: history } = await supabase
   .select("*")
   .eq("phone", from)
   .order("created_at", { ascending: true })
-  .limit(20);
+  .limit(10);
 
 const messages = [
   {
     role: "system",
     content:
-      "Sei un assistente per un host Airbnb. Rispondi in modo naturale, umano e utile.",
+      "Sei un assistente Airbnb. Risposte brevi, utili e concrete.",
   },
 ];
 
 if (history) {
-  history.forEach((msg) => {
+  for (const msg of history) {
     messages.push({
       role: mapRole(msg.role),
       content: msg.message,
     });
-  });
+  }
 }
 
-console.log("🚀 CHIAMO OPENAI...");
+console.log("🚀 OpenAI");
 
-const aiResponse = await openai.chat.completions.create({
+const ai = await openai.chat.completions.create({
   model: "gpt-4o-mini",
-  messages: messages,
+  messages,
 });
 
-const reply = aiResponse.choices[0].message.content;
+const reply = ai.choices[0].message.content;
 
-console.log("🤖 AI:", reply);
+console.log("🤖", reply);
 
-// salva risposta AI
+// salva risposta
 await supabase.from("conversations").insert([
-  {
-    phone: from,
-    role: "assistant",
-    message: reply,
-  },
+  { phone: from, role: "assistant", message: reply },
 ]);
 
-// invia WhatsApp
+// invia whatsapp
 await axios.post(
   `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
   {
@@ -83,6 +70,6 @@ await axios.post(
   }
 );
 
-console.log("📤 RISPOSTA INVIATA");
+console.log("📤 SENT");
 
 res.sendStatus(200);
