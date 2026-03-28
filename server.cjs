@@ -73,9 +73,7 @@ app.post("/webhook", async (req, res) => {
     console.log("TEXT:", text);
 
     const info = extractInfo(text);
-    console.log("INFO:", info);
 
-    // ✅ SALVATAGGIO CORRETTO
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -86,10 +84,6 @@ app.post("/webhook", async (req, res) => {
         guest_count: info.guests || null
       },
     ]);
-
-    // =======================
-    // MEMORY
-    // =======================
 
     const { data: history } = await supabase
       .from("conversations")
@@ -117,6 +111,10 @@ app.post("/webhook", async (req, res) => {
 
     let reply = null;
 
+    // =======================
+    // PRICING
+    // =======================
+
     if (finalMonth && finalDates && finalGuests) {
       const { data: price } = await supabase
         .from("pricing")
@@ -129,12 +127,31 @@ app.post("/webhook", async (req, res) => {
         const avg = Math.round((price.price_min + price.price_max) / 2);
         const total = n * avg;
 
-        reply = `Perfetto! Dal ${finalDates.from} al ${finalDates.to} ${finalMonth} per ${finalGuests} persone il totale è circa ${total}€.`;
+        reply = `Perfetto! Dal ${finalDates.from} al ${finalDates.to} ${finalMonth} per ${finalGuests} persone il totale è circa ${total}€ 😊\n\nSe vuoi, posso aiutarti anche con la disponibilità o altre info sull’alloggio!`;
       }
     }
 
+    // =======================
+    // SMART FALLBACK (NO LOOP)
+    // =======================
+
     if (!reply) {
-      reply = "Perfetto! Puoi indicarmi le date e il numero di ospiti?";
+
+      if (!finalMonth) {
+        reply = "Per quale mese stai pensando di soggiornare? 😊";
+      }
+
+      else if (!finalGuests) {
+        reply = "Perfetto! Quante persone sarete?";
+      }
+
+      else if (!finalDates) {
+        reply = "Hai già delle date precise per il soggiorno?";
+      }
+
+      else {
+        reply = "Dammi un secondo che controllo meglio i dettagli 😊";
+      }
     }
 
     console.log("REPLY:", reply);
