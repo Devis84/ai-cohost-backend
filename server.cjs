@@ -6,10 +6,6 @@ const OpenAI = require("openai");
 const app = express();
 app.use(express.json());
 
-// =======================
-// CONFIG
-// =======================
-
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
@@ -20,7 +16,7 @@ const openai = new OpenAI({
 });
 
 // =======================
-// 🔒 DEDUPLICAZIONE SERIA
+// DEDUPLICAZIONE
 // =======================
 
 const processedMessageIds = new Set();
@@ -36,13 +32,12 @@ function mapRole(role) {
 function extractInfo(text) {
   const lower = text.toLowerCase();
 
-  let month = null;
-
   const months = [
     "gennaio","febbraio","marzo","aprile","maggio","giugno",
     "luglio","agosto","settembre","ottobre","novembre","dicembre"
   ];
 
+  let month = null;
   for (const m of months) {
     if (lower.includes(m)) {
       month = m;
@@ -50,11 +45,29 @@ function extractInfo(text) {
     }
   }
 
-  return {
-    month,
-    dates: null,
-    guests: null
-  };
+  // numeri (ospiti)
+  let guests = null;
+  const guestsMatch = lower.match(/\b(\d+)\b/);
+  if (guestsMatch) {
+    guests = parseInt(guestsMatch[1]);
+  }
+
+  // date (semplice versione)
+  let dates = null;
+  const dateMatch = lower.match(/(\d{1,2}).*(\d{1,2})/);
+  if (dateMatch) {
+    dates = {
+      from: parseInt(dateMatch[1]),
+      to: parseInt(dateMatch[2])
+    };
+  }
+
+  return { month, dates, guests };
+}
+
+function calculateNights(dates) {
+  if (!dates) return null;
+  return dates.to - dates.from;
 }
 
 // =======================
@@ -67,42 +80,32 @@ app.post("/webhook", async (req, res) => {
     const changes = entry?.changes?.[0];
     const value = changes?.value;
 
-    // ❗ ignora eventi non messaggi
     if (!value?.messages) {
       console.log("⚠️ Evento non messaggio ignorato");
       return res.sendStatus(200);
     }
 
     const msg = value.messages[0];
-
     const messageId = msg.id;
     const from = msg.from;
     const text = msg.text?.body;
 
-    // ❗ deduplicazione su ID (fix vero)
     if (processedMessageIds.has(messageId)) {
-      console.log("🚫 DUPLICATO BLOCCATO:", messageId);
+      console.log("🚫 DUPLICATO BLOCCATO");
       return res.sendStatus(200);
     }
 
     processedMessageIds.add(messageId);
-
-    // pulizia memoria
     if (processedMessageIds.size > 1000) {
       processedMessageIds.clear();
     }
 
-    // ❗ ignora messaggi senza testo
     if (!text) {
-      console.log("⚠️ Messaggio senza testo ignorato");
+      console.log("⚠️ No text");
       return res.sendStatus(200);
     }
 
     console.log("📩 TEXT:", text);
-
-    // =======================
-    // ESTRAZIONE INFO
-    // =======================
 
     const info = extractInfo(text);
     console.log("🧠 INFO:", info);
@@ -122,50 +125,84 @@ app.post("/webhook", async (req, res) => {
       },
     ]);
 
-    console.log("✅ Salvato utente");
-
     // =======================
-    // STORICO
+    // RECUPERA MEMORIA COMPLETA
     // =======================
 
     const { data: history } = await supabase
       .from("conversations")
       .select("*")
       .eq("phone", from)
-      .order("created_at", { ascending: true })
-      .limit(10);
+      .order("created_at", { ascending: false })
+      .limit(20);
 
-    const messages = [
-      {
-        role: "system",
-        content:
-          "Sei un assistente per host Airbnb. Risposte brevi, naturali e utili. Se mancano date o numero ospiti, chiedile."
-      },
-    ];
+    let finalMonth = null;
+    let finalDates = null;
+    let finalGuests = null;
 
-    if (history) {
-      for (const h of history) {
-        messages.push({
-          role: mapRole(h.role),
-          content: h.message,
-        });
+    for (const h of history) {
+      if (!finalMonth && h.guest_mon) finalMonth = h.guest_mon;
+      if (!finalDates && h.guest_date) finalDates = h.guest_date;
+      if (!finalGuests && h.guest_count) finalGuests = h.guest_count;
+    }
+
+    console.log("📦 MEMORY:", { finalMonth, finalDates, finalGuests });
+
+    // =======================
+    // PRICING
+    // =======================
+
+    let finalReply = null;
+
+    if (finalMonth && finalDates && finalGuests) {
+
+      const { data: pricing } = await supabase
+        .from("pricing")
+        .select("*")
+        .eq("month", finalMonth)
+        .single();
+
+      if (pricing) {
+        const nights = calculateNights(finalDates);
+        const avgPrice = Math.round((pricing.price_min + pricing.price_max) / 2);
+        const total = nights * avgPrice;
+
+        finalReply = `Perfetto! Dal ${finalDates.from} al ${finalDates.to} ${finalMonth} per ${finalGuests} persone il totale è circa ${total}€. Il prezzo può variare leggermente in base alla disponibilità.`;
       }
     }
 
-    console.log("🧠 Messaggi:", messages.length);
-
     // =======================
-    // OPENAI
+    // SE NON COMPLETO → AI
     // =======================
 
-    const ai = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages,
-    });
+    if (!finalReply) {
 
-    const reply = ai.choices[0].message.content;
+      const messages = [
+        {
+          role: "system",
+          content:
+            "Sei un assistente Airbnb. Risposte brevi. Se mancano date o ospiti, chiedile."
+        },
+      ];
 
-    console.log("🤖 AI:", reply);
+      if (history) {
+        for (const h of history.reverse()) {
+          messages.push({
+            role: mapRole(h.role),
+            content: h.message,
+          });
+        }
+      }
+
+      const ai = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages,
+      });
+
+      finalReply = ai.choices[0].message.content;
+    }
+
+    console.log("🤖 FINAL:", finalReply);
 
     // =======================
     // SALVA AI
@@ -175,14 +212,12 @@ app.post("/webhook", async (req, res) => {
       {
         phone: from,
         role: "assistant",
-        message: reply,
+        message: finalReply,
       },
     ]);
 
-    console.log("✅ Salvato AI");
-
     // =======================
-    // INVIO WHATSAPP
+    // INVIO
     // =======================
 
     await axios.post(
@@ -190,7 +225,7 @@ app.post("/webhook", async (req, res) => {
       {
         messaging_product: "whatsapp",
         to: from,
-        text: { body: reply },
+        text: { body: finalReply },
       },
       {
         headers: {
@@ -211,16 +246,10 @@ app.post("/webhook", async (req, res) => {
 });
 
 // =======================
-// HEALTH CHECK
-// =======================
 
 app.get("/", (req, res) => {
   res.send("OK");
 });
-
-// =======================
-// START SERVER
-// =======================
 
 app.listen(process.env.PORT || 3001, () => {
   console.log("🚀 Server running");
