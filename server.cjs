@@ -18,11 +18,13 @@ const openai = new OpenAI({
 const processed = new Set();
 
 // =======================
-// FIX PARSER SERIO
+// PARSER MIGLIORATO
 // =======================
 
 function extractInfo(text) {
-  const lower = text.toLowerCase();
+  const lower = text.toLowerCase().trim();
+
+  console.log("🔍 PARSING TEXT:", lower);
 
   const months = [
     "gennaio","febbraio","marzo","aprile","maggio","giugno",
@@ -30,29 +32,34 @@ function extractInfo(text) {
   ];
 
   let month = null;
+
   for (const m of months) {
     if (lower.includes(m)) {
       month = m;
-      break;
     }
   }
 
-  // ✅ DATE (priorità alta)
+  console.log("📅 FOUND MONTH:", month);
+
+  // DATE
   let dates = null;
-  const dateMatch = lower.match(/dal\s*(\d{1,2})\D+(\d{1,2})/);
+  const dateMatch = lower.match(/(\d{1,2})\D+(\d{1,2})/);
+
   if (dateMatch) {
     const from = parseInt(dateMatch[1]);
     const to = parseInt(dateMatch[2]);
+
     if (to > from) {
       dates = { from, to };
     }
   }
 
-  // ✅ GUESTS SOLO SE TESTO HA "SIAMO"
+  // GUESTS SOLO SE "siamo"
   let guests = null;
-  const guestMatch = lower.match(/(siamo|per)\s*(\d+)/);
+  const guestMatch = lower.match(/siamo\s*(\d+)/);
+
   if (guestMatch) {
-    guests = parseInt(guestMatch[2]);
+    guests = parseInt(guestMatch[1]);
   }
 
   return { month, dates, guests };
@@ -81,20 +88,20 @@ app.post("/webhook", async (req, res) => {
 
     if (!text) return res.sendStatus(200);
 
-    console.log("TEXT:", text);
+    console.log("📩 TEXT:", text);
 
     const info = extractInfo(text);
-    console.log("INFO:", info);
+    console.log("🧠 INFO:", info);
 
-    // SALVA SOLO SE C'È QUALCOSA
+    // SALVA SEMPRE
     await supabase.from("conversations").insert([
       {
         phone: from,
         role: "guest",
         message: text,
-        guest_mon: info.month || null,
-        guest_date: info.dates || null,
-        guest_count: info.guests || null
+        guest_mon: info.month,
+        guest_date: info.dates,
+        guest_count: info.guests
       },
     ]);
 
@@ -119,13 +126,13 @@ app.post("/webhook", async (req, res) => {
       if (!finalGuests && h.guest_count) finalGuests = h.guest_count;
     }
 
-    console.log("MEMORY:", { finalMonth, finalDates, finalGuests });
+    console.log("📦 MEMORY:", { finalMonth, finalDates, finalGuests });
+
+    let reply = null;
 
     // =======================
     // PRICING
     // =======================
-
-    let reply = null;
 
     if (finalMonth && finalDates && finalGuests) {
 
@@ -145,29 +152,14 @@ app.post("/webhook", async (req, res) => {
     }
 
     // =======================
-    // FALLBACK AI
+    // FALLBACK
     // =======================
 
     if (!reply) {
-      const ai = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content:
-              "Sei un assistente Airbnb. Se mancano date o ospiti chiedile."
-          },
-          {
-            role: "user",
-            content: text,
-          },
-        ],
-      });
-
-      reply = ai.choices[0].message.content;
+      reply = "Perfetto! Puoi indicarmi le date e il numero di ospiti?";
     }
 
-    console.log("REPLY:", reply);
+    console.log("🤖 REPLY:", reply);
 
     await supabase.from("conversations").insert([
       {
@@ -195,7 +187,7 @@ app.post("/webhook", async (req, res) => {
     res.sendStatus(200);
 
   } catch (err) {
-    console.log("ERROR:", err.message);
+    console.log("❌ ERROR:", err.message);
     res.sendStatus(500);
   }
 });
@@ -203,5 +195,5 @@ app.post("/webhook", async (req, res) => {
 app.get("/", (req, res) => res.send("OK"));
 
 app.listen(process.env.PORT || 3001, () => {
-  console.log("Server running");
+  console.log("🚀 Server running");
 });
