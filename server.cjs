@@ -10,7 +10,7 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-// 🔒 ANTI DUPLICATI
+// 🔒 Anti-duplicati
 const processedMessages = new Set();
 
 // =======================
@@ -68,16 +68,13 @@ app.post("/webhook", async (req, res) => {
   try {
     const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
-    // ❌ ignora eventi non messaggio
     if (!msg || !msg.text) {
-      console.log("⚠️ Evento ignorato");
       return res.sendStatus(200);
     }
 
-    // 🔒 BLOCCO DUPLICATI
+    // 🔒 blocco duplicati
     const messageId = msg.id;
     if (processedMessages.has(messageId)) {
-      console.log("⚠️ Messaggio duplicato ignorato");
       return res.sendStatus(200);
     }
     processedMessages.add(messageId);
@@ -89,6 +86,10 @@ app.post("/webhook", async (req, res) => {
 
     const info = extractInfo(text);
 
+    // =======================
+    // SALVA UTENTE
+    // =======================
+
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -99,6 +100,10 @@ app.post("/webhook", async (req, res) => {
         guest_count: info.guests || null
       },
     ]);
+
+    // =======================
+    // MEMORY
+    // =======================
 
     const { data: history } = await supabase
       .from("conversations")
@@ -122,9 +127,17 @@ app.post("/webhook", async (req, res) => {
       if (h.guest_count) finalGuests = h.guest_count;
     }
 
-    console.log("FINAL MEMORY:", { finalMonth, finalDates, finalGuests });
+    console.log("FINAL MEMORY:", {
+      finalMonth,
+      finalDates,
+      finalGuests
+    });
 
     let reply = null;
+
+    // =======================
+    // PRICING
+    // =======================
 
     if (finalMonth && finalDates && finalGuests) {
       const { data: price } = await supabase
@@ -136,41 +149,100 @@ app.post("/webhook", async (req, res) => {
       if (price) {
         const n = nights(finalDates);
         const avg = Math.round((price.price_min + price.price_max) / 2);
-        const total = n * avg;
 
-        reply = `Perfetto! Dal ${finalDates.from} al ${finalDates.to} ${finalMonth} per ${finalGuests} persone il totale è circa ${total}€ 😊`;
+        // 🔥 prezzo dinamico ospiti
+        const multiplier = finalGuests > 2 ? 1.2 : 1;
+
+        const total = Math.round(n * avg * multiplier);
+
+        // 🤖 AI per risposta naturale
+        const ai = await axios.post(
+          "https://api.openai.com/v1/chat/completions",
+          {
+            model: "gpt-4o-mini",
+            messages: [
+              {
+                role: "system",
+                content: "Sei un host Airbnb cordiale, naturale e umano. Risposte brevi, amichevoli."
+              },
+              {
+                role: "user",
+                content: `
+Cliente:
+- mese: ${finalMonth}
+- date: dal ${finalDates.from} al ${finalDates.to}
+- ospiti: ${finalGuests}
+- prezzo: ${total}€
+
+Scrivi risposta naturale.
+`
+              }
+            ]
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+              "Content-Type": "application/json"
+            }
+          }
+        );
+
+        reply = ai.data.choices[0].message.content;
       }
     }
 
+    // =======================
+    // SMART FALLBACK
+    // =======================
+
     if (!reply) {
-      if (!finalMonth) reply = "Per quale mese stai pensando?";
-      else if (!finalGuests) reply = "Quante persone sarete?";
-      else if (!finalDates) reply = "Hai delle date precise?";
-      else reply = "Controllo meglio i dettagli 😊";
+      if (info.month && !info.dates && !info.guests) {
+        reply = `A ${info.month} i prezzi variano un po’, ma siamo più o meno su quella fascia 😊 Se vuoi dimmi le date e ti faccio un calcolo preciso!`;
+      } 
+      else if (!finalMonth) {
+        reply = "Per quale mese stai pensando di venire?";
+      } 
+      else if (!finalGuests) {
+        reply = "Quante persone sarete?";
+      } 
+      else if (!finalDates) {
+        reply = "Hai già delle date precise?";
+      } 
+      else {
+        reply = "Controllo meglio i dettagli 😊";
+      }
     }
 
     console.log("REPLY:", reply);
+
+    // =======================
+    // SALVA AI
+    // =======================
 
     await supabase.from("conversations").insert([
       {
         phone: from,
         role: "assistant",
-        message: reply,
-      },
+        message: reply
+      }
     ]);
+
+    // =======================
+    // INVIO WHATSAPP
+    // =======================
 
     await axios.post(
       `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: "whatsapp",
         to: from,
-        text: { body: reply },
+        text: { body: reply }
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-          "Content-Type": "application/json",
-        },
+          "Content-Type": "application/json"
+        }
       }
     );
 
