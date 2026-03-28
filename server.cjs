@@ -16,10 +16,10 @@ const openai = new OpenAI({
 });
 
 // =======================
-// DEDUPLICAZIONE
+// DEDUP
 // =======================
 
-const processedMessageIds = new Set();
+const processed = new Set();
 
 // =======================
 // HELPERS
@@ -45,29 +45,31 @@ function extractInfo(text) {
     }
   }
 
-  // numeri (ospiti)
+  // 👇 FIX DATE (10 al 15)
+  let dates = null;
+  const dateMatch = lower.match(/(\d{1,2})\D+(\d{1,2})/);
+  if (dateMatch) {
+    const from = parseInt(dateMatch[1]);
+    const to = parseInt(dateMatch[2]);
+
+    if (to > from) {
+      dates = { from, to };
+    }
+  }
+
+  // ospiti
   let guests = null;
   const guestsMatch = lower.match(/\b(\d+)\b/);
   if (guestsMatch) {
     guests = parseInt(guestsMatch[1]);
   }
 
-  // date (semplice versione)
-  let dates = null;
-  const dateMatch = lower.match(/(\d{1,2}).*(\d{1,2})/);
-  if (dateMatch) {
-    dates = {
-      from: parseInt(dateMatch[1]),
-      to: parseInt(dateMatch[2])
-    };
-  }
-
   return { month, dates, guests };
 }
 
-function calculateNights(dates) {
-  if (!dates) return null;
-  return dates.to - dates.from;
+function nights(d) {
+  if (!d) return null;
+  return d.to - d.from;
 }
 
 // =======================
@@ -76,34 +78,24 @@ function calculateNights(dates) {
 
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
+    const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
-    if (!value?.messages) {
-      console.log("⚠️ Evento non messaggio ignorato");
+    if (!msg) {
+      console.log("⚠️ Ignorato evento");
       return res.sendStatus(200);
     }
 
-    const msg = value.messages[0];
-    const messageId = msg.id;
+    if (processed.has(msg.id)) {
+      console.log("🚫 DUPLICATO");
+      return res.sendStatus(200);
+    }
+
+    processed.add(msg.id);
+
     const from = msg.from;
     const text = msg.text?.body;
 
-    if (processedMessageIds.has(messageId)) {
-      console.log("🚫 DUPLICATO BLOCCATO");
-      return res.sendStatus(200);
-    }
-
-    processedMessageIds.add(messageId);
-    if (processedMessageIds.size > 1000) {
-      processedMessageIds.clear();
-    }
-
-    if (!text) {
-      console.log("⚠️ No text");
-      return res.sendStatus(200);
-    }
+    if (!text) return res.sendStatus(200);
 
     console.log("📩 TEXT:", text);
 
@@ -126,7 +118,7 @@ app.post("/webhook", async (req, res) => {
     ]);
 
     // =======================
-    // RECUPERA MEMORIA COMPLETA
+    // MEMORIA (FIX SERIO)
     // =======================
 
     const { data: history } = await supabase
@@ -152,36 +144,35 @@ app.post("/webhook", async (req, res) => {
     // PRICING
     // =======================
 
-    let finalReply = null;
+    let reply = null;
 
     if (finalMonth && finalDates && finalGuests) {
 
-      const { data: pricing } = await supabase
+      const { data: price } = await supabase
         .from("pricing")
         .select("*")
         .eq("month", finalMonth)
         .single();
 
-      if (pricing) {
-        const nights = calculateNights(finalDates);
-        const avgPrice = Math.round((pricing.price_min + pricing.price_max) / 2);
-        const total = nights * avgPrice;
+      if (price) {
+        const n = nights(finalDates);
+        const avg = Math.round((price.price_min + price.price_max) / 2);
+        const total = n * avg;
 
-        finalReply = `Perfetto! Dal ${finalDates.from} al ${finalDates.to} ${finalMonth} per ${finalGuests} persone il totale è circa ${total}€. Il prezzo può variare leggermente in base alla disponibilità.`;
+        reply = `Perfetto! Dal ${finalDates.from} al ${finalDates.to} ${finalMonth} per ${finalGuests} persone il totale è circa ${total}€. Il prezzo può variare leggermente.`;
       }
     }
 
     // =======================
-    // SE NON COMPLETO → AI
+    // FALLBACK AI
     // =======================
 
-    if (!finalReply) {
-
+    if (!reply) {
       const messages = [
         {
           role: "system",
           content:
-            "Sei un assistente Airbnb. Risposte brevi. Se mancano date o ospiti, chiedile."
+            "Sei un assistente Airbnb. Se mancano date o ospiti chiedile."
         },
       ];
 
@@ -199,10 +190,10 @@ app.post("/webhook", async (req, res) => {
         messages,
       });
 
-      finalReply = ai.choices[0].message.content;
+      reply = ai.choices[0].message.content;
     }
 
-    console.log("🤖 FINAL:", finalReply);
+    console.log("🤖 REPLY:", reply);
 
     // =======================
     // SALVA AI
@@ -212,12 +203,12 @@ app.post("/webhook", async (req, res) => {
       {
         phone: from,
         role: "assistant",
-        message: finalReply,
+        message: reply,
       },
     ]);
 
     // =======================
-    // INVIO
+    // SEND
     // =======================
 
     await axios.post(
@@ -225,7 +216,7 @@ app.post("/webhook", async (req, res) => {
       {
         messaging_product: "whatsapp",
         to: from,
-        text: { body: finalReply },
+        text: { body: reply },
       },
       {
         headers: {
@@ -240,7 +231,7 @@ app.post("/webhook", async (req, res) => {
     res.sendStatus(200);
 
   } catch (err) {
-    console.log("❌ ERRORE:", err.message);
+    console.log("❌ ERROR:", err.message);
     res.sendStatus(500);
   }
 });
