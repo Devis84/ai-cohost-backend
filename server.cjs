@@ -10,6 +10,9 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+// 🔒 ANTI DUPLICATI
+const processedMessages = new Set();
+
 // =======================
 // PARSER
 // =======================
@@ -64,11 +67,23 @@ function nights(d) {
 app.post("/webhook", async (req, res) => {
   try {
     const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (!msg) return res.sendStatus(200);
+
+    // ❌ ignora eventi non messaggio
+    if (!msg || !msg.text) {
+      console.log("⚠️ Evento ignorato");
+      return res.sendStatus(200);
+    }
+
+    // 🔒 BLOCCO DUPLICATI
+    const messageId = msg.id;
+    if (processedMessages.has(messageId)) {
+      console.log("⚠️ Messaggio duplicato ignorato");
+      return res.sendStatus(200);
+    }
+    processedMessages.add(messageId);
 
     const from = msg.from;
-    const text = msg.text?.body;
-    if (!text) return res.sendStatus(200);
+    const text = msg.text.body;
 
     console.log("TEXT:", text);
 
@@ -111,10 +126,6 @@ app.post("/webhook", async (req, res) => {
 
     let reply = null;
 
-    // =======================
-    // PRICING
-    // =======================
-
     if (finalMonth && finalDates && finalGuests) {
       const { data: price } = await supabase
         .from("pricing")
@@ -127,31 +138,15 @@ app.post("/webhook", async (req, res) => {
         const avg = Math.round((price.price_min + price.price_max) / 2);
         const total = n * avg;
 
-        reply = `Perfetto! Dal ${finalDates.from} al ${finalDates.to} ${finalMonth} per ${finalGuests} persone il totale è circa ${total}€ 😊\n\nSe vuoi, posso aiutarti anche con la disponibilità o altre info sull’alloggio!`;
+        reply = `Perfetto! Dal ${finalDates.from} al ${finalDates.to} ${finalMonth} per ${finalGuests} persone il totale è circa ${total}€ 😊`;
       }
     }
 
-    // =======================
-    // SMART FALLBACK (NO LOOP)
-    // =======================
-
     if (!reply) {
-
-      if (!finalMonth) {
-        reply = "Per quale mese stai pensando di soggiornare? 😊";
-      }
-
-      else if (!finalGuests) {
-        reply = "Perfetto! Quante persone sarete?";
-      }
-
-      else if (!finalDates) {
-        reply = "Hai già delle date precise per il soggiorno?";
-      }
-
-      else {
-        reply = "Dammi un secondo che controllo meglio i dettagli 😊";
-      }
+      if (!finalMonth) reply = "Per quale mese stai pensando?";
+      else if (!finalGuests) reply = "Quante persone sarete?";
+      else if (!finalDates) reply = "Hai delle date precise?";
+      else reply = "Controllo meglio i dettagli 😊";
     }
 
     console.log("REPLY:", reply);
