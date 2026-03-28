@@ -1,104 +1,133 @@
-require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
-const OpenAI = require("openai");
 const { createClient } = require("@supabase/supabase-js");
+const OpenAI = require("openai");
 
 const app = express();
 app.use(express.json());
 
-// OPENAI
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// =======================
+// CONFIG
+// =======================
 
-// SUPABASE
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
 
-// MAPPATURA RUOLI
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// =======================
+// 🔒 DEDUPLICAZIONE SERIA
+// =======================
+
+const processedMessageIds = new Set();
+
+// =======================
+// HELPERS
+// =======================
+
 function mapRole(role) {
-  if (role === "guest") return "user";
-  if (role === "assistant") return "assistant";
-  return "user";
+  return role === "assistant" ? "assistant" : "user";
 }
 
-// ===== ESTRAZIONE DATI =====
-async function extractInfo(text) {
-  const res = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "system",
-        content: `
-Estrai informazioni dal messaggio.
+function extractInfo(text) {
+  const lower = text.toLowerCase();
 
-Rispondi SOLO in JSON:
+  let month = null;
 
-{
-  "month": "...",
-  "dates": "...",
-  "guests": number
-}
+  const months = [
+    "gennaio","febbraio","marzo","aprile","maggio","giugno",
+    "luglio","agosto","settembre","ottobre","novembre","dicembre"
+  ];
 
-Se non presenti → null
-`,
-      },
-      {
-        role: "user",
-        content: text,
-      },
-    ],
-  });
-
-  try {
-    return JSON.parse(res.choices[0].message.content);
-  } catch {
-    return {};
+  for (const m of months) {
+    if (lower.includes(m)) {
+      month = m;
+      break;
+    }
   }
+
+  return {
+    month,
+    dates: null,
+    guests: null
+  };
 }
 
+// =======================
 // WEBHOOK
+// =======================
+
 app.post("/webhook", async (req, res) => {
   try {
-    console.log("📩 WEBHOOK");
-
     const entry = req.body.entry?.[0];
     const changes = entry?.changes?.[0];
     const value = changes?.value;
-    const message = value?.messages?.[0];
 
-    if (!message) return res.sendStatus(200);
+    // ❗ ignora eventi non messaggi
+    if (!value?.messages) {
+      console.log("⚠️ Evento non messaggio ignorato");
+      return res.sendStatus(200);
+    }
 
-    const from = message.from;
-    const text = message.text?.body;
+    const msg = value.messages[0];
 
-    if (!text) return res.sendStatus(200);
+    const messageId = msg.id;
+    const from = msg.from;
+    const text = msg.text?.body;
 
-    console.log("💬 TEXT:", text);
+    // ❗ deduplicazione su ID (fix vero)
+    if (processedMessageIds.has(messageId)) {
+      console.log("🚫 DUPLICATO BLOCCATO:", messageId);
+      return res.sendStatus(200);
+    }
 
-    // ===== ESTRAZIONE INFO =====
-    const info = await extractInfo(text);
+    processedMessageIds.add(messageId);
 
+    // pulizia memoria
+    if (processedMessageIds.size > 1000) {
+      processedMessageIds.clear();
+    }
+
+    // ❗ ignora messaggi senza testo
+    if (!text) {
+      console.log("⚠️ Messaggio senza testo ignorato");
+      return res.sendStatus(200);
+    }
+
+    console.log("📩 TEXT:", text);
+
+    // =======================
+    // ESTRAZIONE INFO
+    // =======================
+
+    const info = extractInfo(text);
     console.log("🧠 INFO:", info);
 
-    // ===== SALVA UTENTE =====
+    // =======================
+    // SALVA UTENTE
+    // =======================
+
     await supabase.from("conversations").insert([
       {
         phone: from,
         role: "guest",
         message: text,
-        guest_month: info.month || null,
-        guest_dates: info.dates || null,
-        guest_count: info.guests || null,
+        guest_mon: info.month,
+        guest_date: info.dates,
+        guest_count: info.guests
       },
     ]);
 
     console.log("✅ Salvato utente");
 
-    // ===== RECUPERA STORICO =====
+    // =======================
+    // STORICO
+    // =======================
+
     const { data: history } = await supabase
       .from("conversations")
       .select("*")
@@ -106,45 +135,11 @@ app.post("/webhook", async (req, res) => {
       .order("created_at", { ascending: true })
       .limit(10);
 
-    // ===== COSTRUZIONE CONTESTO =====
-    let memoryContext = "";
-
-    if (history) {
-      const last = history.reverse().find(
-        (h) => h.guest_month || h.guest_dates || h.guest_count
-      );
-
-      if (last) {
-        memoryContext = `
-Dati utente:
-- mese: ${last.guest_month || "non specificato"}
-- date: ${last.guest_dates || "non specificate"}
-- ospiti: ${last.guest_count || "non specificati"}
-`;
-      }
-    }
-
-    // ===== PROMPT =====
     const messages = [
       {
         role: "system",
-        content: `
-Sei un host Airbnb reale.
-
-Appartamento in città.
-Prezzi:
-- base: 100–120€
-- giugno/luglio: 110–130€
-
-${memoryContext}
-
-Regole:
-- Risposte brevi
-- Usa i dati utente se disponibili
-- Non essere generico
-- Non dire "dipende da tanti fattori"
-- Se hai info → dai risposta diretta
-`,
+        content:
+          "Sei un assistente per host Airbnb. Risposte brevi, naturali e utili. Se mancano date o numero ospiti, chiedile."
       },
     ];
 
@@ -157,7 +152,12 @@ Regole:
       }
     }
 
-    // ===== OPENAI =====
+    console.log("🧠 Messaggi:", messages.length);
+
+    // =======================
+    // OPENAI
+    // =======================
+
     const ai = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages,
@@ -167,7 +167,10 @@ Regole:
 
     console.log("🤖 AI:", reply);
 
-    // ===== SALVA AI =====
+    // =======================
+    // SALVA AI
+    // =======================
+
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -176,7 +179,12 @@ Regole:
       },
     ]);
 
-    // ===== INVIO WHATSAPP =====
+    console.log("✅ Salvato AI");
+
+    // =======================
+    // INVIO WHATSAPP
+    // =======================
+
     await axios.post(
       `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
@@ -195,16 +203,24 @@ Regole:
     console.log("📤 SENT");
 
     res.sendStatus(200);
+
   } catch (err) {
-    console.log("❌ ERROR:", err.message);
+    console.log("❌ ERRORE:", err.message);
     res.sendStatus(500);
   }
 });
 
-// ROOT
+// =======================
+// HEALTH CHECK
+// =======================
+
 app.get("/", (req, res) => {
   res.send("OK");
 });
+
+// =======================
+// START SERVER
+// =======================
 
 app.listen(process.env.PORT || 3001, () => {
   console.log("🚀 Server running");
