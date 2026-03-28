@@ -10,10 +10,8 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-const processed = new Set();
-
 // =======================
-// PARSER INTELLIGENTE
+// PARSER
 // =======================
 
 function extractInfo(text) {
@@ -29,7 +27,6 @@ function extractInfo(text) {
     if (lower.includes(m)) month = m;
   }
 
-  // DATE
   let dates = null;
   const dateMatch = lower.match(/(\d{1,2})\D+(\d{1,2})/);
   if (dateMatch) {
@@ -38,22 +35,15 @@ function extractInfo(text) {
     if (to > from) dates = { from, to };
   }
 
-  // GUESTS (SUPER ROBUSTO)
   let guests = null;
-
-  // prende SOLO numeri se NON sono date
   const numbers = lower.match(/\d+/g);
 
   if (numbers) {
     for (const n of numbers) {
       const num = parseInt(n);
 
-      // escludi numeri date (tipo 10 e 15)
-      if (dates && (num === dates.from || num === dates.to)) {
-        continue;
-      }
+      if (dates && (num === dates.from || num === dates.to)) continue;
 
-      // numero plausibile ospiti
       if (num > 0 && num <= 10) {
         guests = num;
       }
@@ -76,12 +66,8 @@ app.post("/webhook", async (req, res) => {
     const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (!msg) return res.sendStatus(200);
 
-    if (processed.has(msg.id)) return res.sendStatus(200);
-    processed.add(msg.id);
-
     const from = msg.from;
     const text = msg.text?.body;
-
     if (!text) return res.sendStatus(200);
 
     console.log("TEXT:", text);
@@ -89,10 +75,7 @@ app.post("/webhook", async (req, res) => {
     const info = extractInfo(text);
     console.log("INFO:", info);
 
-    // =======================
     // SALVA
-    // =======================
-
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -105,27 +88,26 @@ app.post("/webhook", async (req, res) => {
     ]);
 
     // =======================
-    // MEMORY (CORRETTA)
+    // MEMORY CORRETTA (FIX)
     // =======================
 
     const { data: history } = await supabase
       .from("conversations")
       .select("*")
       .eq("phone", from)
-      .order("created_at", { ascending: false })
-      .limit(20);
+      .order("created_at", { ascending: true });
 
     let finalMonth = null;
     let finalDates = null;
     let finalGuests = null;
 
     for (const h of history) {
-      if (!finalMonth && h.guest_mon) finalMonth = h.guest_mon;
-      if (!finalDates && h.guest_date) finalDates = h.guest_date;
-      if (!finalGuests && h.guest_count) finalGuests = h.guest_count;
+      if (h.guest_mon) finalMonth = h.guest_mon;
+      if (h.guest_date) finalDates = h.guest_date;
+      if (h.guest_count) finalGuests = h.guest_count;
     }
 
-    console.log("MEMORY:", { finalMonth, finalDates, finalGuests });
+    console.log("FINAL MEMORY:", { finalMonth, finalDates, finalGuests });
 
     let reply = null;
 
@@ -134,7 +116,6 @@ app.post("/webhook", async (req, res) => {
     // =======================
 
     if (finalMonth && finalDates && finalGuests) {
-
       const { data: price } = await supabase
         .from("pricing")
         .select("*")
