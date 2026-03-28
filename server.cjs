@@ -1,7 +1,6 @@
 const express = require("express");
 const axios = require("axios");
 const { createClient } = require("@supabase/supabase-js");
-const OpenAI = require("openai");
 
 const app = express();
 app.use(express.json());
@@ -11,20 +10,14 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 const processed = new Set();
 
 // =======================
-// PARSER MIGLIORATO
+// PARSER
 // =======================
 
 function extractInfo(text) {
-  const lower = text.toLowerCase().trim();
-
-  console.log("🔍 PARSING TEXT:", lower);
+  const lower = text.toLowerCase();
 
   const months = [
     "gennaio","febbraio","marzo","aprile","maggio","giugno",
@@ -32,32 +25,20 @@ function extractInfo(text) {
   ];
 
   let month = null;
-
   for (const m of months) {
-    if (lower.includes(m)) {
-      month = m;
-    }
+    if (lower.includes(m)) month = m;
   }
 
-  console.log("📅 FOUND MONTH:", month);
-
-  // DATE
   let dates = null;
   const dateMatch = lower.match(/(\d{1,2})\D+(\d{1,2})/);
-
   if (dateMatch) {
     const from = parseInt(dateMatch[1]);
     const to = parseInt(dateMatch[2]);
-
-    if (to > from) {
-      dates = { from, to };
-    }
+    if (to > from) dates = { from, to };
   }
 
-  // GUESTS SOLO SE "siamo"
   let guests = null;
   const guestMatch = lower.match(/siamo\s*(\d+)/);
-
   if (guestMatch) {
     guests = parseInt(guestMatch[1]);
   }
@@ -66,8 +47,7 @@ function extractInfo(text) {
 }
 
 function nights(d) {
-  if (!d) return null;
-  return d.to - d.from;
+  return d ? d.to - d.from : null;
 }
 
 // =======================
@@ -77,7 +57,6 @@ function nights(d) {
 app.post("/webhook", async (req, res) => {
   try {
     const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-
     if (!msg) return res.sendStatus(200);
 
     if (processed.has(msg.id)) return res.sendStatus(200);
@@ -85,15 +64,17 @@ app.post("/webhook", async (req, res) => {
 
     const from = msg.from;
     const text = msg.text?.body;
-
     if (!text) return res.sendStatus(200);
 
-    console.log("📩 TEXT:", text);
+    console.log("TEXT:", text);
 
     const info = extractInfo(text);
-    console.log("🧠 INFO:", info);
+    console.log("INFO:", info);
 
-    // SALVA SEMPRE
+    // =======================
+    // SALVA
+    // =======================
+
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -106,7 +87,7 @@ app.post("/webhook", async (req, res) => {
     ]);
 
     // =======================
-    // MEMORY
+    // MEMORY (FIX)
     // =======================
 
     const { data: history } = await supabase
@@ -116,9 +97,9 @@ app.post("/webhook", async (req, res) => {
       .order("created_at", { ascending: false })
       .limit(20);
 
-    let finalMonth = null;
-    let finalDates = null;
-    let finalGuests = null;
+    let finalMonth = info.month || null;
+    let finalDates = info.dates || null;
+    let finalGuests = info.guests || null;
 
     for (const h of history) {
       if (!finalMonth && h.guest_mon) finalMonth = h.guest_mon;
@@ -126,7 +107,7 @@ app.post("/webhook", async (req, res) => {
       if (!finalGuests && h.guest_count) finalGuests = h.guest_count;
     }
 
-    console.log("📦 MEMORY:", { finalMonth, finalDates, finalGuests });
+    console.log("MEMORY:", { finalMonth, finalDates, finalGuests });
 
     let reply = null;
 
@@ -159,7 +140,7 @@ app.post("/webhook", async (req, res) => {
       reply = "Perfetto! Puoi indicarmi le date e il numero di ospiti?";
     }
 
-    console.log("🤖 REPLY:", reply);
+    console.log("REPLY:", reply);
 
     await supabase.from("conversations").insert([
       {
@@ -187,13 +168,11 @@ app.post("/webhook", async (req, res) => {
     res.sendStatus(200);
 
   } catch (err) {
-    console.log("❌ ERROR:", err.message);
+    console.log("ERROR:", err.message);
     res.sendStatus(500);
   }
 });
 
-app.get("/", (req, res) => res.send("OK"));
-
 app.listen(process.env.PORT || 3001, () => {
-  console.log("🚀 Server running");
+  console.log("Server running");
 });
