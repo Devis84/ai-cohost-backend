@@ -25,6 +25,41 @@ function mapRole(role) {
   return "user";
 }
 
+// ===== ESTRAZIONE DATI =====
+async function extractInfo(text) {
+  const res = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content: `
+Estrai informazioni dal messaggio.
+
+Rispondi SOLO in JSON:
+
+{
+  "month": "...",
+  "dates": "...",
+  "guests": number
+}
+
+Se non presenti → null
+`,
+      },
+      {
+        role: "user",
+        content: text,
+      },
+    ],
+  });
+
+  try {
+    return JSON.parse(res.choices[0].message.content);
+  } catch {
+    return {};
+  }
+}
+
 // WEBHOOK
 app.post("/webhook", async (req, res) => {
   try {
@@ -35,18 +70,19 @@ app.post("/webhook", async (req, res) => {
     const value = changes?.value;
     const message = value?.messages?.[0];
 
-    if (!message) {
-      console.log("⚠️ Nessun messaggio");
-      return res.sendStatus(200);
-    }
+    if (!message) return res.sendStatus(200);
 
     const from = message.from;
     const text = message.text?.body;
 
-    console.log("👤 FROM:", from);
+    if (!text) return res.sendStatus(200);
+
     console.log("💬 TEXT:", text);
 
-    if (!text) return res.sendStatus(200);
+    // ===== ESTRAZIONE INFO =====
+    const info = await extractInfo(text);
+
+    console.log("🧠 INFO:", info);
 
     // ===== SALVA UTENTE =====
     await supabase.from("conversations").insert([
@@ -54,18 +90,39 @@ app.post("/webhook", async (req, res) => {
         phone: from,
         role: "guest",
         message: text,
+        guest_month: info.month || null,
+        guest_dates: info.dates || null,
+        guest_count: info.guests || null,
       },
     ]);
 
-    console.log("✅ Salvato messaggio utente");
+    console.log("✅ Salvato utente");
 
-    // ===== STORICO =====
+    // ===== RECUPERA STORICO =====
     const { data: history } = await supabase
       .from("conversations")
       .select("*")
       .eq("phone", from)
       .order("created_at", { ascending: true })
       .limit(10);
+
+    // ===== COSTRUZIONE CONTESTO =====
+    let memoryContext = "";
+
+    if (history) {
+      const last = history.reverse().find(
+        (h) => h.guest_month || h.guest_dates || h.guest_count
+      );
+
+      if (last) {
+        memoryContext = `
+Dati utente:
+- mese: ${last.guest_month || "non specificato"}
+- date: ${last.guest_dates || "non specificate"}
+- ospiti: ${last.guest_count || "non specificati"}
+`;
+      }
+    }
 
     // ===== PROMPT =====
     const messages = [
@@ -74,29 +131,24 @@ app.post("/webhook", async (req, res) => {
         content: `
 Sei un host Airbnb reale.
 
-Informazioni struttura:
-- Appartamento in città
-- Prezzo medio: 100–120€ a notte
-- Giugno/Luglio: 110–130€ a notte
+Appartamento in città.
+Prezzi:
+- base: 100–120€
+- giugno/luglio: 110–130€
+
+${memoryContext}
 
 Regole:
-- Risposte brevi (stile WhatsApp)
-- NON essere generico
-- NON dire "dipende da molti fattori"
-- Dai numeri concreti
-- Usa lo storico della conversazione
-
-Comportamento:
-- Se chiedono prezzo → dai range realistico
-- Se dicono mese → usa i prezzi corretti
-- Se manca info → chiedi solo quello che serve
-
-Parla come un host umano, non come un assistente AI.
+- Risposte brevi
+- Usa i dati utente se disponibili
+- Non essere generico
+- Non dire "dipende da tanti fattori"
+- Se hai info → dai risposta diretta
 `,
       },
     ];
 
-    if (history && history.length > 0) {
+    if (history) {
       for (const h of history) {
         messages.push({
           role: mapRole(h.role),
@@ -105,12 +157,10 @@ Parla come un host umano, non come un assistente AI.
       }
     }
 
-    console.log("🧠 Messaggi:", messages.length);
-
     // ===== OPENAI =====
     const ai = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: messages,
+      messages,
     });
 
     const reply = ai.choices[0].message.content;
@@ -126,9 +176,7 @@ Parla come un host umano, non come un assistente AI.
       },
     ]);
 
-    console.log("✅ Salvato messaggio AI");
-
-    // ===== INVIO =====
+    // ===== INVIO WHATSAPP =====
     await axios.post(
       `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
@@ -148,7 +196,7 @@ Parla come un host umano, non come un assistente AI.
 
     res.sendStatus(200);
   } catch (err) {
-    console.log("❌ ERRORE:", err.message);
+    console.log("❌ ERROR:", err.message);
     res.sendStatus(500);
   }
 });
@@ -158,7 +206,6 @@ app.get("/", (req, res) => {
   res.send("OK");
 });
 
-// SERVER
 app.listen(process.env.PORT || 3001, () => {
   console.log("🚀 Server running");
 });
