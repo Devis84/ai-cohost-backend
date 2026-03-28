@@ -75,20 +75,23 @@ app.post("/webhook", async (req, res) => {
     const info = extractInfo(text);
     console.log("INFO:", info);
 
-    // SALVA
+    // =======================
+    // SALVA UTENTE (FIX DB)
+    // =======================
+
     await supabase.from("conversations").insert([
       {
         phone: from,
         role: "guest",
         message: text,
-        guest_mon: info.month,
-        guest_date: info.dates,
-        guest_count: info.guests
+        guest_mon: info.month || null,
+        guest_date: info.dates ? JSON.stringify(info.dates) : null,
+        guest_count: info.guests || null
       },
     ]);
 
     // =======================
-    // MEMORY CORRETTA (FIX)
+    // MEMORY (LEGGE + PARSE)
     // =======================
 
     const { data: history } = await supabase
@@ -103,7 +106,15 @@ app.post("/webhook", async (req, res) => {
 
     for (const h of history) {
       if (h.guest_mon) finalMonth = h.guest_mon;
-      if (h.guest_date) finalDates = h.guest_date;
+
+      if (h.guest_date) {
+        try {
+          finalDates = typeof h.guest_date === "string"
+            ? JSON.parse(h.guest_date)
+            : h.guest_date;
+        } catch (e) {}
+      }
+
       if (h.guest_count) finalGuests = h.guest_count;
     }
 
