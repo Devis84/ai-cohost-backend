@@ -75,23 +75,20 @@ app.post("/webhook", async (req, res) => {
     const info = extractInfo(text);
     console.log("INFO:", info);
 
-    // =======================
-    // SALVA UTENTE (FIX DB)
-    // =======================
-
+    // ✅ SALVATAGGIO CORRETTO
     await supabase.from("conversations").insert([
       {
         phone: from,
         role: "guest",
         message: text,
-        guest_mon: info.month || null,
-        guest_date: info.dates ? JSON.stringify(info.dates) : null,
+        guest_month: info.month || null,
+        guest_dates: info.dates ? JSON.stringify(info.dates) : null,
         guest_count: info.guests || null
       },
     ]);
 
     // =======================
-    // MEMORY (LEGGE + PARSE)
+    // MEMORY
     // =======================
 
     const { data: history } = await supabase
@@ -105,14 +102,12 @@ app.post("/webhook", async (req, res) => {
     let finalGuests = null;
 
     for (const h of history) {
-      if (h.guest_mon) finalMonth = h.guest_mon;
+      if (h.guest_month) finalMonth = h.guest_month;
 
-      if (h.guest_date) {
+      if (h.guest_dates) {
         try {
-          finalDates = typeof h.guest_date === "string"
-            ? JSON.parse(h.guest_date)
-            : h.guest_date;
-        } catch (e) {}
+          finalDates = JSON.parse(h.guest_dates);
+        } catch {}
       }
 
       if (h.guest_count) finalGuests = h.guest_count;
@@ -121,10 +116,6 @@ app.post("/webhook", async (req, res) => {
     console.log("FINAL MEMORY:", { finalMonth, finalDates, finalGuests });
 
     let reply = null;
-
-    // =======================
-    // PRICING
-    // =======================
 
     if (finalMonth && finalDates && finalGuests) {
       const { data: price } = await supabase
@@ -141,10 +132,6 @@ app.post("/webhook", async (req, res) => {
         reply = `Perfetto! Dal ${finalDates.from} al ${finalDates.to} ${finalMonth} per ${finalGuests} persone il totale è circa ${total}€.`;
       }
     }
-
-    // =======================
-    // FALLBACK
-    // =======================
 
     if (!reply) {
       reply = "Perfetto! Puoi indicarmi le date e il numero di ospiti?";
