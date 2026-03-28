@@ -18,7 +18,7 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-// MAPPATURA RUOLI (DB → OPENAI)
+// MAPPATURA RUOLI
 function mapRole(role) {
   if (role === "guest") return "user";
   if (role === "assistant") return "assistant";
@@ -48,7 +48,7 @@ app.post("/webhook", async (req, res) => {
 
     if (!text) return res.sendStatus(200);
 
-    // ===== SALVA MESSAGGIO UTENTE =====
+    // ===== SALVA UTENTE =====
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -59,7 +59,7 @@ app.post("/webhook", async (req, res) => {
 
     console.log("✅ Salvato messaggio utente");
 
-    // ===== PRENDI STORICO =====
+    // ===== STORICO =====
     const { data: history } = await supabase
       .from("conversations")
       .select("*")
@@ -67,21 +67,31 @@ app.post("/webhook", async (req, res) => {
       .order("created_at", { ascending: true })
       .limit(10);
 
-    // ===== COSTRUZIONE MESSAGGI =====
+    // ===== PROMPT =====
     const messages = [
       {
         role: "system",
         content: `
-Sei un assistente per un host Airbnb.
+Sei un host Airbnb reale.
 
-Usa SEMPRE lo storico della conversazione per rispondere.
+Informazioni struttura:
+- Appartamento in città
+- Prezzo medio: 100–120€ a notte
+- Giugno/Luglio: 110–130€ a notte
 
 Regole:
-- Non ripetere sempre "come posso aiutarti"
-- Continua il discorso
-- Se parlano di prezzi → dai range realistici
-- Se danno info (mese, date) → usale
-- Risposte brevi e naturali (stile WhatsApp)
+- Risposte brevi (stile WhatsApp)
+- NON essere generico
+- NON dire "dipende da molti fattori"
+- Dai numeri concreti
+- Usa lo storico della conversazione
+
+Comportamento:
+- Se chiedono prezzo → dai range realistico
+- Se dicono mese → usa i prezzi corretti
+- Se manca info → chiedi solo quello che serve
+
+Parla come un host umano, non come un assistente AI.
 `,
       },
     ];
@@ -95,9 +105,9 @@ Regole:
       }
     }
 
-    console.log("🧠 Messaggi inviati a OpenAI:", messages.length);
+    console.log("🧠 Messaggi:", messages.length);
 
-    // ===== CHIAMATA OPENAI =====
+    // ===== OPENAI =====
     const ai = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: messages,
@@ -107,7 +117,7 @@ Regole:
 
     console.log("🤖 AI:", reply);
 
-    // ===== SALVA RISPOSTA AI =====
+    // ===== SALVA AI =====
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -118,7 +128,7 @@ Regole:
 
     console.log("✅ Salvato messaggio AI");
 
-    // ===== INVIO WHATSAPP =====
+    // ===== INVIO =====
     await axios.post(
       `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
