@@ -50,9 +50,7 @@ function extractInfo(text) {
 
       if (dates && (num === dates.from || num === dates.to)) continue;
 
-      if (num > 0 && num <= 10) {
-        guests = num;
-      }
+      if (num > 0 && num <= 10) guests = num;
     }
   }
 
@@ -61,6 +59,22 @@ function extractInfo(text) {
 
 function nights(d) {
   return d ? d.to - d.from : null;
+}
+
+// =======================
+// INTENT (LEAD)
+// =======================
+
+function isLeadIntent(text) {
+  const t = text.toLowerCase();
+
+  return (
+    t.includes("prenot") ||
+    t.includes("book") ||
+    t.includes("interessato") ||
+    t.includes("ok") ||
+    t.includes("va bene")
+  );
 }
 
 // =======================
@@ -79,9 +93,14 @@ app.post("/webhook", async (req, res) => {
     const from = msg.from;
     const text = msg.text.body;
 
+    console.log("TEXT:", text);
+
     const info = extractInfo(text);
 
-    // salva
+    // =======================
+    // SALVA UTENTE
+    // =======================
+
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -93,7 +112,10 @@ app.post("/webhook", async (req, res) => {
       }
     ]);
 
-    // PRENDI SOLO ULTIMI 10
+    // =======================
+    // MEMORY (CORRETTA)
+    // =======================
+
     const { data: history } = await supabase
       .from("conversations")
       .select("*")
@@ -121,6 +143,10 @@ app.post("/webhook", async (req, res) => {
 
     let reply;
 
+    // =======================
+    // PRICING
+    // =======================
+
     if (finalMonth && finalDates && finalGuests) {
       const { data: price } = await supabase
         .from("pricing")
@@ -133,16 +159,61 @@ app.post("/webhook", async (req, res) => {
         const avg = (price.price_min + price.price_max) / 2;
         const total = Math.round(n * avg);
 
-        reply = `Perfetto 😊 Dal ${finalDates.from} al ${finalDates.to} ${finalMonth} per ${finalGuests} persona${finalGuests > 1 ? "e" : ""} il totale è circa ${total}€.`;
+        reply = `Perfetto 😊
+
+Per le date dal ${finalDates.from} al ${finalDates.to} ${finalMonth}, per ${finalGuests} ${finalGuests > 1 ? "persone" : "persona"}, il totale è intorno ai ${total}€.
+
+Se vuoi, posso controllarti anche la disponibilità 👍`;
       }
     }
 
-    if (!reply) {
-      if (!finalMonth) reply = "Per quale mese?";
-      else if (!finalGuests) reply = "Quante persone?";
-      else if (!finalDates) reply = "Che date?";
-      else reply = "Controllo meglio 😊";
+    // =======================
+    // LEAD SYSTEM
+    // =======================
+
+    if (isLeadIntent(text) && finalMonth && finalDates && finalGuests) {
+      console.log("🔥 LEAD DETECTED");
+
+      await supabase.from("leads").insert([
+        {
+          phone: from,
+          month: finalMonth,
+          dates: JSON.stringify(finalDates),
+          guests: finalGuests
+        }
+      ]);
+
+      reply = `Perfetto 🙌
+
+Ti blocco la disponibilità per quelle date.
+
+Posso chiederti il nome per completare la richiesta?`;
     }
+
+    // =======================
+    // FALLBACK SMART
+    // =======================
+
+    if (!reply) {
+      if (!finalMonth && !info.month) {
+        reply = "Per quale mese stai pensando?";
+      } 
+      else if (!finalGuests) {
+        reply = "Quante persone sarete?";
+      } 
+      else if (!finalDates) {
+        reply = "Hai già delle date precise?";
+      } 
+      else {
+        reply = "Controllo meglio i dettagli 😊";
+      }
+    }
+
+    console.log("REPLY:", reply);
+
+    // =======================
+    // SALVA AI
+    // =======================
 
     await supabase.from("conversations").insert([
       {
@@ -151,6 +222,10 @@ app.post("/webhook", async (req, res) => {
         message: reply
       }
     ]);
+
+    // =======================
+    // INVIO WHATSAPP
+    // =======================
 
     await axios.post(
       `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -175,4 +250,6 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.listen(process.env.PORT || 3001);
+app.listen(process.env.PORT || 3001, () => {
+  console.log("Server running");
+});
