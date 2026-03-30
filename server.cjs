@@ -15,43 +15,37 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-const processedMessages = new Set();
+// 🔥 FIX DUPLICATI
+const processed = new Set();
 
 // =======================
 // PARSER
 // =======================
 
 function extractInfo(text) {
-  const lower = text.toLowerCase();
-
-  const months = [
-    "gennaio","febbraio","marzo","aprile","maggio","giugno",
-    "luglio","agosto","settembre","ottobre","novembre","dicembre"
-  ];
+  const t = text.toLowerCase();
 
   let month = null;
-  for (const m of months) {
-    if (lower.includes(m)) month = m;
-  }
+  if (t.includes("giugno")) month = "giugno";
+  if (t.includes("luglio")) month = "luglio";
 
   let dates = null;
-  const match = lower.match(/(\d{1,2})\D+(\d{1,2})/);
-  if (match) {
-    const from = parseInt(match[1]);
-    const to = parseInt(match[2]);
+  const m = t.match(/(\d{1,2})\D+(\d{1,2})/);
+  if (m) {
+    const from = parseInt(m[1]);
+    const to = parseInt(m[2]);
     if (to > from) dates = { from, to };
   }
 
   let guests = null;
+  if (t.includes("solo")) guests = 1;
 
-  if (lower.includes("solo")) guests = 1;
-
-  const numbers = lower.match(/\d+/g);
-  if (numbers) {
-    for (const n of numbers) {
+  const nums = t.match(/\d+/g);
+  if (nums) {
+    for (const n of nums) {
       const num = parseInt(n);
       if (dates && (num === dates.from || num === dates.to)) continue;
-      if (num > 0 && num <= 10) guests = num;
+      if (num <= 10) guests = num;
     }
   }
 
@@ -63,44 +57,32 @@ function nights(d) {
 }
 
 // =======================
-// AI TEXT GENERATOR (SOLO STILE)
-// =======================
-
-async function generateText(message) {
-  const prompt = `
-Riscrivi questo messaggio in modo:
-- naturale
-- amichevole
-- commerciale leggero
-- breve
-
-Messaggio:
-"${message}"
-`;
-
-  const res = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [{ role: "user", content: prompt }]
-  });
-
-  return res.choices[0].message.content;
-}
-
-// =======================
 // WEBHOOK
 // =======================
 
 app.post("/webhook", async (req, res) => {
   try {
-    const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    const entry = req.body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
 
-    if (!msg || !msg.text) return res.sendStatus(200);
-    if (processedMessages.has(msg.id)) return res.sendStatus(200);
+    // 🔥 IGNORA EVENTI NON MESSAGGI
+    if (!value?.messages) {
+      return res.sendStatus(200);
+    }
 
-    processedMessages.add(msg.id);
+    const msg = value.messages[0];
+
+    // 🔥 IGNORA DUPLICATI
+    if (processed.has(msg.id)) {
+      return res.sendStatus(200);
+    }
+    processed.add(msg.id);
 
     const from = msg.from;
-    const text = msg.text.body;
+    const text = msg.text?.body;
+
+    if (!text) return res.sendStatus(200);
 
     console.log("TEXT:", text);
 
@@ -124,7 +106,7 @@ app.post("/webhook", async (req, res) => {
       .select("*")
       .eq("phone", from)
       .order("created_at", { ascending: false })
-      .limit(15);
+      .limit(20);
 
     let finalMonth = info.month || null;
     let finalDates = info.dates || null;
@@ -144,26 +126,16 @@ app.post("/webhook", async (req, res) => {
 
     console.log("FINAL:", { finalMonth, finalDates, finalGuests });
 
-    let baseReply = null;
+    let reply;
 
-    // =======================
-    // FLOW CONTROLLATO
-    // =======================
-
+    // FLOW
     if (!finalMonth) {
-      baseReply = "Per quale mese stai pensando?";
-    }
-
-    else if (!finalGuests) {
-      baseReply = "Quante persone sarete?";
-    }
-
-    else if (!finalDates) {
-      baseReply = "Hai già delle date precise?";
-    }
-
-    else {
-      // PRICING
+      reply = "Per quale mese stai pensando?";
+    } else if (!finalGuests) {
+      reply = "Quante persone sarete?";
+    } else if (!finalDates) {
+      reply = "Hai già delle date precise?";
+    } else {
       const { data: price } = await supabase
         .from("pricing")
         .select("*")
@@ -174,43 +146,11 @@ app.post("/webhook", async (req, res) => {
         const avg = (price.price_min + price.price_max) / 2;
         const total = Math.round(nights(finalDates) * avg);
 
-        baseReply = `Per le date dal ${finalDates.from} al ${finalDates.to} ${finalMonth}, per ${finalGuests} persone, il totale è circa ${total}€.
+        reply = `Per le date dal ${finalDates.from} al ${finalDates.to} ${finalMonth}, per ${finalGuests} persone, il totale è circa ${total}€.
 
-Se vuoi posso controllare subito la disponibilità 👍`;
+Se vuoi posso controllare la disponibilità 👍`;
       }
     }
-
-    // =======================
-    // LEAD
-    // =======================
-
-    if (
-      finalMonth &&
-      finalDates &&
-      finalGuests &&
-      text.toLowerCase().includes("va bene")
-    ) {
-      await supabase.from("leads").insert([
-        {
-          phone: from,
-          month: finalMonth,
-          dates: JSON.stringify(finalDates),
-          guests: finalGuests,
-          status: "new",
-          created_at: new Date().toISOString()
-        }
-      ]);
-
-      baseReply = `Perfetto 🙌 Ti blocco la disponibilità.
-
-Posso chiederti il nome?`;
-    }
-
-    // =======================
-    // AI REWRITE
-    // =======================
-
-    const reply = await generateText(baseReply);
 
     console.log("REPLY:", reply);
 
