@@ -61,25 +61,14 @@ function nights(d) {
 // INTENT
 // =======================
 
-function isYes(text) {
+function detectIntent(text) {
   const t = text.toLowerCase();
-  return (
-    t === "si" ||
-    t === "sì" ||
-    t.includes("ok") ||
-    t.includes("certo") ||
-    t.includes("grazie")
-  );
-}
 
-function isGreeting(text) {
-  const t = text.toLowerCase();
-  return t.includes("ciao") || t.includes("salve") || t.includes("hello");
-}
+  if (t.includes("meno") && t.includes("costa")) return "PRICE_HINT";
+  if (t.includes("ciao") || t.includes("salve")) return "GREETING";
+  if (t === "si" || t === "sì" || t.includes("ok") || t.includes("grazie")) return "YES";
 
-function isLeadIntent(text) {
-  const t = text.toLowerCase();
-  return t.includes("prenot") || t.includes("va bene");
+  return "NORMAL";
 }
 
 // =======================
@@ -100,6 +89,7 @@ app.post("/webhook", async (req, res) => {
 
     console.log("TEXT:", text);
 
+    const intent = detectIntent(text);
     const info = extractInfo(text);
 
     // =======================
@@ -146,21 +136,25 @@ app.post("/webhook", async (req, res) => {
 
     console.log("FINAL:", { finalMonth, finalDates, finalGuests });
 
-    let reply;
+    let reply = null;
 
     // =======================
-    // GREETING (fix robotico)
+    // INTENT PRIORITY
     // =======================
 
-    if (isGreeting(text) && !finalMonth && !finalGuests && !finalDates) {
+    if (intent === "GREETING") {
       reply = "Ciao! 😊 Ti aiuto volentieri. Per quando stai pensando di venire?";
     }
 
-    // =======================
-    // YES → AVANTI (fix loop)
-    // =======================
+    if (intent === "PRICE_HINT") {
+      reply = `Di solito i mesi più economici sono giugno e settembre 😊
 
-    if (!reply && isYes(text) && finalMonth && finalDates && finalGuests) {
+Luglio e agosto sono più richiesti e quindi un po' più cari.
+
+Se vuoi, dimmi delle date e ti faccio un calcolo preciso 👍`;
+    }
+
+    if (intent === "YES" && finalMonth && finalDates && finalGuests) {
       reply = `Perfetto 🙌
 
 Controllo la disponibilità per le date dal ${finalDates.from} al ${finalDates.to} ${finalMonth}.
@@ -169,7 +163,7 @@ Ti aggiorno tra un attimo 👍`;
     }
 
     // =======================
-    // COLLECT INFO
+    // FLOW
     // =======================
 
     if (!reply) {
@@ -210,7 +204,7 @@ Se vuoi, posso controllarti anche la disponibilità 👍`;
     // LEAD
     // =======================
 
-    if (!reply && isLeadIntent(text) && finalMonth && finalDates && finalGuests) {
+    if (!reply && finalMonth && finalDates && finalGuests && text.toLowerCase().includes("va bene")) {
       await supabase.from("leads").insert([
         {
           phone: from,
