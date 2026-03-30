@@ -30,26 +30,22 @@ function extractInfo(text) {
   }
 
   let dates = null;
-  const dateMatch = lower.match(/(\d{1,2})\D+(\d{1,2})/);
-  if (dateMatch) {
-    const from = parseInt(dateMatch[1]);
-    const to = parseInt(dateMatch[2]);
+  const match = lower.match(/(\d{1,2})\D+(\d{1,2})/);
+  if (match) {
+    const from = parseInt(match[1]);
+    const to = parseInt(match[2]);
     if (to > from) dates = { from, to };
   }
 
   let guests = null;
 
-  if (lower.includes("solo") || lower.includes("da solo")) {
-    guests = 1;
-  }
+  if (lower.includes("solo")) guests = 1;
 
   const numbers = lower.match(/\d+/g);
   if (numbers) {
     for (const n of numbers) {
       const num = parseInt(n);
-
       if (dates && (num === dates.from || num === dates.to)) continue;
-
       if (num > 0 && num <= 10) guests = num;
     }
   }
@@ -61,20 +57,9 @@ function nights(d) {
   return d ? d.to - d.from : null;
 }
 
-// =======================
-// INTENT (LEAD)
-// =======================
-
 function isLeadIntent(text) {
   const t = text.toLowerCase();
-
-  return (
-    t.includes("prenot") ||
-    t.includes("book") ||
-    t.includes("interessato") ||
-    t.includes("ok") ||
-    t.includes("va bene")
-  );
+  return t.includes("ok") || t.includes("prenot") || t.includes("va bene");
 }
 
 // =======================
@@ -86,8 +71,8 @@ app.post("/webhook", async (req, res) => {
     const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
     if (!msg || !msg.text) return res.sendStatus(200);
-
     if (processedMessages.has(msg.id)) return res.sendStatus(200);
+
     processedMessages.add(msg.id);
 
     const from = msg.from;
@@ -97,10 +82,7 @@ app.post("/webhook", async (req, res) => {
 
     const info = extractInfo(text);
 
-    // =======================
-    // SALVA UTENTE
-    // =======================
-
+    // salva messaggio
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -113,7 +95,7 @@ app.post("/webhook", async (req, res) => {
     ]);
 
     // =======================
-    // MEMORY (CORRETTA)
+    // MEMORY
     // =======================
 
     const { data: history } = await supabase
@@ -139,15 +121,43 @@ app.post("/webhook", async (req, res) => {
       if (!finalGuests && h.guest_count) finalGuests = h.guest_count;
     }
 
-    console.log("FINAL:", { finalMonth, finalDates, finalGuests });
+    // =======================
+    // STATE ENGINE
+    // =======================
+
+    let state = "COLLECTING";
+
+    if (finalMonth && finalDates && finalGuests) {
+      state = "READY";
+    }
+
+    if (isLeadIntent(text) && state === "READY") {
+      state = "LEAD";
+    }
+
+    console.log("STATE:", state);
 
     let reply;
 
     // =======================
-    // PRICING
+    // FLOW LOGIC
     // =======================
 
-    if (finalMonth && finalDates && finalGuests) {
+    if (state === "COLLECTING") {
+      if (!finalMonth) {
+        reply = "Per quale mese stai pensando?";
+      } else if (!finalGuests) {
+        reply = "Quante persone sarete?";
+      } else if (!finalDates) {
+        reply = "Hai già delle date precise?";
+      }
+    }
+
+    // =======================
+    // PRICING (SOLO READY)
+    // =======================
+
+    if (state === "READY") {
       const { data: price } = await supabase
         .from("pricing")
         .select("*")
@@ -168,12 +178,10 @@ Se vuoi, posso controllarti anche la disponibilità 👍`;
     }
 
     // =======================
-    // LEAD SYSTEM
+    // LEAD
     // =======================
 
-    if (isLeadIntent(text) && finalMonth && finalDates && finalGuests) {
-      console.log("🔥 LEAD DETECTED");
-
+    if (state === "LEAD") {
       await supabase.from("leads").insert([
         {
           phone: from,
@@ -190,31 +198,14 @@ Ti blocco la disponibilità per quelle date.
 Posso chiederti il nome per completare la richiesta?`;
     }
 
-    // =======================
-    // FALLBACK SMART
-    // =======================
-
+    // fallback sicurezza
     if (!reply) {
-      if (!finalMonth && !info.month) {
-        reply = "Per quale mese stai pensando?";
-      } 
-      else if (!finalGuests) {
-        reply = "Quante persone sarete?";
-      } 
-      else if (!finalDates) {
-        reply = "Hai già delle date precise?";
-      } 
-      else {
-        reply = "Controllo meglio i dettagli 😊";
-      }
+      reply = "Dimmi pure 👍";
     }
 
     console.log("REPLY:", reply);
 
-    // =======================
-    // SALVA AI
-    // =======================
-
+    // salva AI
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -223,10 +214,7 @@ Posso chiederti il nome per completare la richiesta?`;
       }
     ]);
 
-    // =======================
-    // INVIO WHATSAPP
-    // =======================
-
+    // invio whatsapp
     await axios.post(
       `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
@@ -250,6 +238,4 @@ Posso chiederti il nome per completare la richiesta?`;
   }
 });
 
-app.listen(process.env.PORT || 3001, () => {
-  console.log("Server running");
-});
+app.listen(process.env.PORT || 3001);
