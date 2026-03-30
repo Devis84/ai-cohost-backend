@@ -63,47 +63,19 @@ function nights(d) {
 }
 
 // =======================
-// INTENT
+// AI TEXT GENERATOR (SOLO STILE)
 // =======================
 
-function detectIntent(text) {
-  const t = text.toLowerCase();
-
-  if (t.includes("meno") && t.includes("costa")) return "PRICE_HINT";
-  if (t.includes("ciao") || t.includes("salve")) return "GREETING";
-  if (t === "si" || t === "sì" || t.includes("ok") || t.includes("grazie")) return "YES";
-
-  return "NORMAL";
-}
-
-// =======================
-// AI RESPONSE
-// =======================
-
-async function generateReply(context) {
+async function generateText(message) {
   const prompt = `
-Sei un host Airbnb molto bravo a comunicare.
-
-Tono:
+Riscrivi questo messaggio in modo:
 - naturale
 - amichevole
-- commerciale (ma non aggressivo)
-- breve (max 3-4 righe)
+- commerciale leggero
+- breve
 
-Dati cliente:
-- mese: ${context.month || "non specificato"}
-- date: ${context.dates ? `${context.dates.from}-${context.dates.to}` : "non specificate"}
-- ospiti: ${context.guests || "non specificato"}
-- prezzo: ${context.price || "non disponibile"}
-
-Regole IMPORTANTI:
-- NON inventare prezzi
-- se manca qualcosa, chiedilo in modo naturale
-- se hai prezzo, comunicalo bene e invita all'azione
-- NON ripetere frasi uguali
-- NON sembrare robot
-
-Rispondi al messaggio: "${context.userText}"
+Messaggio:
+"${message}"
 `;
 
   const res = await openai.chat.completions.create({
@@ -132,7 +104,6 @@ app.post("/webhook", async (req, res) => {
 
     console.log("TEXT:", text);
 
-    const intent = detectIntent(text);
     const info = extractInfo(text);
 
     // SAVE USER
@@ -153,7 +124,7 @@ app.post("/webhook", async (req, res) => {
       .select("*")
       .eq("phone", from)
       .order("created_at", { ascending: false })
-      .limit(10);
+      .limit(15);
 
     let finalMonth = info.month || null;
     let finalDates = info.dates || null;
@@ -171,74 +142,75 @@ app.post("/webhook", async (req, res) => {
       if (!finalGuests && h.guest_count) finalGuests = h.guest_count;
     }
 
-    let priceData = null;
+    console.log("FINAL:", { finalMonth, finalDates, finalGuests });
 
-    if (finalMonth) {
-      const { data } = await supabase
+    let baseReply = null;
+
+    // =======================
+    // FLOW CONTROLLATO
+    // =======================
+
+    if (!finalMonth) {
+      baseReply = "Per quale mese stai pensando?";
+    }
+
+    else if (!finalGuests) {
+      baseReply = "Quante persone sarete?";
+    }
+
+    else if (!finalDates) {
+      baseReply = "Hai già delle date precise?";
+    }
+
+    else {
+      // PRICING
+      const { data: price } = await supabase
         .from("pricing")
         .select("*")
         .eq("month", finalMonth)
         .single();
 
-      priceData = data;
-    }
+      if (price) {
+        const avg = (price.price_min + price.price_max) / 2;
+        const total = Math.round(nights(finalDates) * avg);
 
-    let totalPrice = null;
+        baseReply = `Per le date dal ${finalDates.from} al ${finalDates.to} ${finalMonth}, per ${finalGuests} persone, il totale è circa ${total}€.
 
-    if (priceData && finalDates && finalGuests) {
-      const n = nights(finalDates);
-      const avg = (priceData.price_min + priceData.price_max) / 2;
-      totalPrice = Math.round(n * avg);
-    }
-
-    // =======================
-    // INTENT OVERRIDE
-    // =======================
-
-    let reply = null;
-
-    if (intent === "PRICE_HINT") {
-      reply = `Di solito giugno e settembre sono più economici 😊
-
-Luglio e agosto sono più richiesti, quindi un po' più cari.
-
-Se vuoi, dimmi delle date e ti faccio un calcolo preciso 👍`;
-    }
-
-    // =======================
-    // AI RESPONSE (CORE)
-    // =======================
-
-    if (!reply) {
-      reply = await generateReply({
-        month: finalMonth,
-        dates: finalDates,
-        guests: finalGuests,
-        price: totalPrice,
-        userText: text
-      });
+Se vuoi posso controllare subito la disponibilità 👍`;
+      }
     }
 
     // =======================
     // LEAD
     // =======================
 
-    if (finalMonth && finalDates && finalGuests && text.toLowerCase().includes("va bene")) {
+    if (
+      finalMonth &&
+      finalDates &&
+      finalGuests &&
+      text.toLowerCase().includes("va bene")
+    ) {
       await supabase.from("leads").insert([
         {
           phone: from,
           month: finalMonth,
           dates: JSON.stringify(finalDates),
-          guests: finalGuests
+          guests: finalGuests,
+          status: "new",
+          created_at: new Date().toISOString()
         }
       ]);
 
-      reply += `
-
-Perfetto 🙌 Ti blocco la disponibilità.
+      baseReply = `Perfetto 🙌 Ti blocco la disponibilità.
 
 Posso chiederti il nome?`;
     }
+
+    // =======================
+    // AI REWRITE
+    // =======================
+
+    const reply = await generateText(baseReply);
 
     console.log("REPLY:", reply);
 
