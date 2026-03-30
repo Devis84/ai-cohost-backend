@@ -1,6 +1,7 @@
 const express = require("express");
 const axios = require("axios");
 const { createClient } = require("@supabase/supabase-js");
+const OpenAI = require("openai");
 
 const app = express();
 app.use(express.json());
@@ -9,6 +10,10 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
 const processedMessages = new Set();
 
@@ -72,6 +77,44 @@ function detectIntent(text) {
 }
 
 // =======================
+// AI RESPONSE
+// =======================
+
+async function generateReply(context) {
+  const prompt = `
+Sei un host Airbnb molto bravo a comunicare.
+
+Tono:
+- naturale
+- amichevole
+- commerciale (ma non aggressivo)
+- breve (max 3-4 righe)
+
+Dati cliente:
+- mese: ${context.month || "non specificato"}
+- date: ${context.dates ? `${context.dates.from}-${context.dates.to}` : "non specificate"}
+- ospiti: ${context.guests || "non specificato"}
+- prezzo: ${context.price || "non disponibile"}
+
+Regole IMPORTANTI:
+- NON inventare prezzi
+- se manca qualcosa, chiedilo in modo naturale
+- se hai prezzo, comunicalo bene e invita all'azione
+- NON ripetere frasi uguali
+- NON sembrare robot
+
+Rispondi al messaggio: "${context.userText}"
+`;
+
+  const res = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [{ role: "user", content: prompt }]
+  });
+
+  return res.choices[0].message.content;
+}
+
+// =======================
 // WEBHOOK
 // =======================
 
@@ -92,10 +135,7 @@ app.post("/webhook", async (req, res) => {
     const intent = detectIntent(text);
     const info = extractInfo(text);
 
-    // =======================
     // SAVE USER
-    // =======================
-
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -107,10 +147,7 @@ app.post("/webhook", async (req, res) => {
       }
     ]);
 
-    // =======================
     // MEMORY
-    // =======================
-
     const { data: history } = await supabase
       .from("conversations")
       .select("*")
@@ -134,77 +171,59 @@ app.post("/webhook", async (req, res) => {
       if (!finalGuests && h.guest_count) finalGuests = h.guest_count;
     }
 
-    console.log("FINAL:", { finalMonth, finalDates, finalGuests });
+    let priceData = null;
 
-    let reply = null;
-
-    // =======================
-    // INTENT PRIORITY
-    // =======================
-
-    if (intent === "GREETING") {
-      reply = "Ciao! 😊 Ti aiuto volentieri. Per quando stai pensando di venire?";
-    }
-
-    if (intent === "PRICE_HINT") {
-      reply = `Di solito i mesi più economici sono giugno e settembre 😊
-
-Luglio e agosto sono più richiesti e quindi un po' più cari.
-
-Se vuoi, dimmi delle date e ti faccio un calcolo preciso 👍`;
-    }
-
-    if (intent === "YES" && finalMonth && finalDates && finalGuests) {
-      reply = `Perfetto 🙌
-
-Controllo la disponibilità per le date dal ${finalDates.from} al ${finalDates.to} ${finalMonth}.
-
-Ti aggiorno tra un attimo 👍`;
-    }
-
-    // =======================
-    // FLOW
-    // =======================
-
-    if (!reply) {
-      if (!finalMonth) {
-        reply = "Per quale mese stai pensando?";
-      } else if (!finalGuests) {
-        reply = "Quante persone sarete?";
-      } else if (!finalDates) {
-        reply = "Hai già delle date precise?";
-      }
-    }
-
-    // =======================
-    // PRICING
-    // =======================
-
-    if (!reply && finalMonth && finalDates && finalGuests) {
-      const { data: price } = await supabase
+    if (finalMonth) {
+      const { data } = await supabase
         .from("pricing")
         .select("*")
         .eq("month", finalMonth)
         .single();
 
-      if (price) {
-        const n = nights(finalDates);
-        const avg = (price.price_min + price.price_max) / 2;
-        const total = Math.round(n * avg);
+      priceData = data;
+    }
 
-        reply = `Perfetto 😊
+    let totalPrice = null;
 
-Per le date dal ${finalDates.from} al ${finalDates.to} ${finalMonth}, per ${finalGuests} ${finalGuests > 1 ? "persone" : "persona"}, il totale è intorno ai ${total}€.
+    if (priceData && finalDates && finalGuests) {
+      const n = nights(finalDates);
+      const avg = (priceData.price_min + priceData.price_max) / 2;
+      totalPrice = Math.round(n * avg);
+    }
 
-Se vuoi, posso controllarti anche la disponibilità 👍`;
-      }
+    // =======================
+    // INTENT OVERRIDE
+    // =======================
+
+    let reply = null;
+
+    if (intent === "PRICE_HINT") {
+      reply = `Di solito giugno e settembre sono più economici 😊
+
+Luglio e agosto sono più richiesti, quindi un po' più cari.
+
+Se vuoi, dimmi delle date e ti faccio un calcolo preciso 👍`;
+    }
+
+    // =======================
+    // AI RESPONSE (CORE)
+    // =======================
+
+    if (!reply) {
+      reply = await generateReply({
+        month: finalMonth,
+        dates: finalDates,
+        guests: finalGuests,
+        price: totalPrice,
+        userText: text
+      });
     }
 
     // =======================
     // LEAD
     // =======================
 
-    if (!reply && finalMonth && finalDates && finalGuests && text.toLowerCase().includes("va bene")) {
+    if (finalMonth && finalDates && finalGuests && text.toLowerCase().includes("va bene")) {
       await supabase.from("leads").insert([
         {
           phone: from,
@@ -214,27 +233,16 @@ Se vuoi, posso controllarti anche la disponibilità 👍`;
         }
       ]);
 
-      reply = `Perfetto 🙌
+      reply += `
 
-Ti blocco la disponibilità per quelle date.
+Perfetto 🙌 Ti blocco la disponibilità.
 
-Posso chiederti il nome per completare la richiesta?`;
-    }
-
-    // =======================
-    // FALLBACK
-    // =======================
-
-    if (!reply) {
-      reply = "Dimmi pure 👍";
+Posso chiederti il nome?`;
     }
 
     console.log("REPLY:", reply);
 
-    // =======================
     // SAVE AI
-    // =======================
-
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -243,10 +251,7 @@ Posso chiederti il nome per completare la richiesta?`;
       }
     ]);
 
-    // =======================
-    // SEND WHATSAPP
-    // =======================
-
+    // SEND
     await axios.post(
       `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
