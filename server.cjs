@@ -57,9 +57,29 @@ function nights(d) {
   return d ? d.to - d.from : null;
 }
 
+// =======================
+// INTENT
+// =======================
+
+function isYes(text) {
+  const t = text.toLowerCase();
+  return (
+    t === "si" ||
+    t === "sì" ||
+    t.includes("ok") ||
+    t.includes("certo") ||
+    t.includes("grazie")
+  );
+}
+
+function isGreeting(text) {
+  const t = text.toLowerCase();
+  return t.includes("ciao") || t.includes("salve") || t.includes("hello");
+}
+
 function isLeadIntent(text) {
   const t = text.toLowerCase();
-  return t.includes("ok") || t.includes("prenot") || t.includes("va bene");
+  return t.includes("prenot") || t.includes("va bene");
 }
 
 // =======================
@@ -82,7 +102,10 @@ app.post("/webhook", async (req, res) => {
 
     const info = extractInfo(text);
 
-    // salva messaggio
+    // =======================
+    // SAVE USER
+    // =======================
+
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -121,29 +144,35 @@ app.post("/webhook", async (req, res) => {
       if (!finalGuests && h.guest_count) finalGuests = h.guest_count;
     }
 
-    // =======================
-    // STATE ENGINE
-    // =======================
-
-    let state = "COLLECTING";
-
-    if (finalMonth && finalDates && finalGuests) {
-      state = "READY";
-    }
-
-    if (isLeadIntent(text) && state === "READY") {
-      state = "LEAD";
-    }
-
-    console.log("STATE:", state);
+    console.log("FINAL:", { finalMonth, finalDates, finalGuests });
 
     let reply;
 
     // =======================
-    // FLOW LOGIC
+    // GREETING (fix robotico)
     // =======================
 
-    if (state === "COLLECTING") {
+    if (isGreeting(text) && !finalMonth && !finalGuests && !finalDates) {
+      reply = "Ciao! 😊 Ti aiuto volentieri. Per quando stai pensando di venire?";
+    }
+
+    // =======================
+    // YES → AVANTI (fix loop)
+    // =======================
+
+    if (!reply && isYes(text) && finalMonth && finalDates && finalGuests) {
+      reply = `Perfetto 🙌
+
+Controllo la disponibilità per le date dal ${finalDates.from} al ${finalDates.to} ${finalMonth}.
+
+Ti aggiorno tra un attimo 👍`;
+    }
+
+    // =======================
+    // COLLECT INFO
+    // =======================
+
+    if (!reply) {
       if (!finalMonth) {
         reply = "Per quale mese stai pensando?";
       } else if (!finalGuests) {
@@ -154,10 +183,10 @@ app.post("/webhook", async (req, res) => {
     }
 
     // =======================
-    // PRICING (SOLO READY)
+    // PRICING
     // =======================
 
-    if (state === "READY") {
+    if (!reply && finalMonth && finalDates && finalGuests) {
       const { data: price } = await supabase
         .from("pricing")
         .select("*")
@@ -181,7 +210,7 @@ Se vuoi, posso controllarti anche la disponibilità 👍`;
     // LEAD
     // =======================
 
-    if (state === "LEAD") {
+    if (!reply && isLeadIntent(text) && finalMonth && finalDates && finalGuests) {
       await supabase.from("leads").insert([
         {
           phone: from,
@@ -198,14 +227,20 @@ Ti blocco la disponibilità per quelle date.
 Posso chiederti il nome per completare la richiesta?`;
     }
 
-    // fallback sicurezza
+    // =======================
+    // FALLBACK
+    // =======================
+
     if (!reply) {
       reply = "Dimmi pure 👍";
     }
 
     console.log("REPLY:", reply);
 
-    // salva AI
+    // =======================
+    // SAVE AI
+    // =======================
+
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -214,7 +249,10 @@ Posso chiederti il nome per completare la richiesta?`;
       }
     ]);
 
-    // invio whatsapp
+    // =======================
+    // SEND WHATSAPP
+    // =======================
+
     await axios.post(
       `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
@@ -238,4 +276,6 @@ Posso chiederti il nome per completare la richiesta?`;
   }
 });
 
-app.listen(process.env.PORT || 3001);
+app.listen(process.env.PORT || 3001, () => {
+  console.log("Server running");
+});
