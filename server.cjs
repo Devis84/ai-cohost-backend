@@ -18,18 +18,7 @@ const openai = new OpenAI({
 const processed = new Set();
 
 // =======================
-// LANGUAGE
-// =======================
-
-function detectLanguage(text) {
-  if (!text) return "it";
-  const t = text.toLowerCase();
-  if (t.includes("hello")) return "en";
-  return "it";
-}
-
-// =======================
-// PARSER
+// PARSER BASE
 // =======================
 
 function extractInfo(text) {
@@ -68,30 +57,26 @@ function nights(d) {
 }
 
 // =======================
-// INTENT EXTRA
+// AI CORE
 // =======================
 
-function isCheapQuestion(text) {
-  const t = text.toLowerCase();
-  return t.includes("costa meno") || t.includes("economico");
-}
-
-// =======================
-// CLEAN AI
-// =======================
-
-async function rewrite(text, lang) {
-  if (!text) return "Scusa, puoi ripetere?";
-
+async function generateReply(context) {
   const prompt = `
-Riscrivi questo messaggio in ${lang}:
-- naturale
-- breve
-- senza virgolette
-- tono umano
+Sei un assistente per affitti brevi su WhatsApp.
 
-Messaggio:
-${text}
+OBIETTIVO:
+- capire cosa manca (mese, date, ospiti)
+- fare UNA domanda alla volta
+- oppure dare prezzo se hai tutto
+
+DATI:
+${JSON.stringify(context)}
+
+REGOLE:
+- NON ripetere domande già fatte
+- NON usare virgolette
+- risposta breve e naturale
+- massimo 2 frasi
 `;
 
   const res = await openai.chat.completions.create({
@@ -99,12 +84,7 @@ ${text}
     messages: [{ role: "user", content: prompt }]
   });
 
-  let out = res.choices[0].message.content;
-
-  // safety remove quotes
-  out = out.replace(/^["']|["']$/g, "");
-
-  return out;
+  return res.choices[0].message.content;
 }
 
 // =======================
@@ -127,7 +107,6 @@ app.post("/webhook", async (req, res) => {
 
     if (!text) return res.sendStatus(200);
 
-    const lang = detectLanguage(text);
     const info = extractInfo(text);
 
     // SAVE USER
@@ -148,7 +127,7 @@ app.post("/webhook", async (req, res) => {
       .select("*")
       .eq("phone", from)
       .order("created_at", { ascending: false })
-      .limit(20);
+      .limit(15);
 
     let finalMonth = null;
     let finalDates = null;
@@ -162,48 +141,72 @@ app.post("/webhook", async (req, res) => {
       if (!finalGuests && h.guest_count) finalGuests = h.guest_count;
     }
 
-    // =======================
-    // FLOW LOGIC
-    // =======================
+    // PRICING
+    let pricingData = null;
 
-    let baseReply = null;
-
-    // 👉 gestione domanda prezzo economico
-    if (isCheapQuestion(text)) {
-      baseReply = "Di solito i mesi più economici sono giugno e settembre. Luglio e agosto sono più richiesti.";
-    }
-
-    // 👉 flow normale
-    else if (!finalMonth) {
-      baseReply = "Per quale mese stai pensando?";
-    } 
-    else if (!finalGuests) {
-      baseReply = "Quante persone sarete?";
-    } 
-    else if (!finalDates) {
-      baseReply = "Hai già delle date precise?";
-    } 
-    else {
-      const { data: price } = await supabase
+    if (finalMonth) {
+      const { data } = await supabase
         .from("pricing")
         .select("*")
         .eq("month", finalMonth)
         .single();
 
-      if (price) {
-        const avg = (price.price_min + price.price_max) / 2;
-        const total = Math.round(nights(finalDates) * avg);
-
-        baseReply = `Dal ${finalDates.from} al ${finalDates.to} ${finalMonth} per ${finalGuests} persone il totale è circa ${total}€. Vuoi che controlli la disponibilità?`;
-      }
+      if (data) pricingData = data;
     }
 
-    // fallback sicurezza
-    if (!baseReply) {
-      baseReply = "Puoi darmi qualche dettaglio in più sul soggiorno?";
+    let priceInfo = null;
+
+    if (pricingData && finalDates && finalGuests) {
+      const avg = (pricingData.price_min + pricingData.price_max) / 2;
+      const total = Math.round(nights(finalDates) * avg);
+
+      priceInfo = {
+        total,
+        from: finalDates.from,
+        to: finalDates.to,
+        month: finalMonth,
+        guests: finalGuests
+      };
     }
 
-    const reply = await rewrite(baseReply, lang);
+    // CONTEXT FOR AI
+    const context = {
+      user_message: text,
+      month: finalMonth,
+      dates: finalDates,
+      guests: finalGuests,
+      price: priceInfo
+    };
+
+    let reply;
+
+    // 👉 SE HO PREZZO → NON CHIEDERE AI
+    if (priceInfo) {
+      reply = `Dal ${priceInfo.from} al ${priceInfo.to} ${priceInfo.month} per ${priceInfo.guests} persone il totale è circa ${priceInfo.total}€. Vuoi che controlli la disponibilità?`;
+    } else {
+      reply = await generateReply(context);
+    }
+
+    // LEAD
+    if (
+      finalMonth &&
+      finalDates &&
+      finalGuests &&
+      text.toLowerCase().includes("ok")
+    ) {
+      await supabase.from("leads").insert([
+        {
+          phone: from,
+          month: finalMonth,
+          dates: JSON.stringify(finalDates),
+          guests: finalGuests,
+          status: "new",
+          created_at: new Date().toISOString()
+        }
+      ]);
+
+      reply = "Perfetto 🙌 Ti blocco la disponibilità. Come ti chiami?";
+    }
 
     // SAVE AI
     await supabase.from("conversations").insert([
