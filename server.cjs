@@ -15,8 +15,21 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-// 🔥 FIX DUPLICATI
 const processed = new Set();
+
+// =======================
+// LANGUAGE DETECTION
+// =======================
+
+function detectLanguage(text) {
+  if (!text) return "it";
+  const t = text.toLowerCase();
+
+  if (t.match(/\b(hello|hi|thanks|price)\b/)) return "en";
+  if (t.match(/\b(hola|gracias)\b/)) return "es";
+
+  return "it";
+}
 
 // =======================
 // PARSER
@@ -57,26 +70,42 @@ function nights(d) {
 }
 
 // =======================
+// AI STYLE (SOLO RISCRITTURA)
+// =======================
+
+async function rewrite(text, lang) {
+  const prompt = `
+Riscrivi questo messaggio in ${lang} in modo:
+- naturale
+- amichevole
+- breve
+- umano
+
+Messaggio:
+"${text}"
+`;
+
+  const res = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [{ role: "user", content: prompt }]
+  });
+
+  return res.choices[0].message.content;
+}
+
+// =======================
 // WEBHOOK
 // =======================
 
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
+    const value = req.body.entry?.[0]?.changes?.[0]?.value;
 
-    // 🔥 IGNORA EVENTI NON MESSAGGI
-    if (!value?.messages) {
-      return res.sendStatus(200);
-    }
+    if (!value?.messages) return res.sendStatus(200);
 
     const msg = value.messages[0];
 
-    // 🔥 IGNORA DUPLICATI
-    if (processed.has(msg.id)) {
-      return res.sendStatus(200);
-    }
+    if (processed.has(msg.id)) return res.sendStatus(200);
     processed.add(msg.id);
 
     const from = msg.from;
@@ -84,8 +113,7 @@ app.post("/webhook", async (req, res) => {
 
     if (!text) return res.sendStatus(200);
 
-    console.log("TEXT:", text);
-
+    const lang = detectLanguage(text);
     const info = extractInfo(text);
 
     // SAVE USER
@@ -108,33 +136,27 @@ app.post("/webhook", async (req, res) => {
       .order("created_at", { ascending: false })
       .limit(20);
 
-    let finalMonth = info.month || null;
-    let finalDates = info.dates || null;
-    let finalGuests = info.guests || null;
+    let finalMonth = null;
+    let finalDates = null;
+    let finalGuests = null;
 
     for (const h of history) {
       if (!finalMonth && h.guest_month) finalMonth = h.guest_month;
-
       if (!finalDates && h.guest_dates) {
-        try {
-          finalDates = JSON.parse(h.guest_dates);
-        } catch {}
+        try { finalDates = JSON.parse(h.guest_dates); } catch {}
       }
-
       if (!finalGuests && h.guest_count) finalGuests = h.guest_count;
     }
 
-    console.log("FINAL:", { finalMonth, finalDates, finalGuests });
-
-    let reply;
-
     // FLOW
+    let baseReply;
+
     if (!finalMonth) {
-      reply = "Per quale mese stai pensando?";
+      baseReply = "Per quale mese stai pensando?";
     } else if (!finalGuests) {
-      reply = "Quante persone sarete?";
+      baseReply = "Quante persone sarete?";
     } else if (!finalDates) {
-      reply = "Hai già delle date precise?";
+      baseReply = "Hai già delle date precise?";
     } else {
       const { data: price } = await supabase
         .from("pricing")
@@ -146,13 +168,35 @@ app.post("/webhook", async (req, res) => {
         const avg = (price.price_min + price.price_max) / 2;
         const total = Math.round(nights(finalDates) * avg);
 
-        reply = `Per le date dal ${finalDates.from} al ${finalDates.to} ${finalMonth}, per ${finalGuests} persone, il totale è circa ${total}€.
+        baseReply = `Dal ${finalDates.from} al ${finalDates.to} ${finalMonth} per ${finalGuests} persone siamo intorno ai ${total}€.
 
-Se vuoi posso controllare la disponibilità 👍`;
+Vuoi che controllo la disponibilità?`;
       }
     }
 
-    console.log("REPLY:", reply);
+    // LEAD TRIGGER
+    if (
+      finalMonth &&
+      finalDates &&
+      finalGuests &&
+      text.toLowerCase().includes("va bene")
+    ) {
+      await supabase.from("leads").insert([
+        {
+          phone: from,
+          month: finalMonth,
+          dates: JSON.stringify(finalDates),
+          guests: finalGuests,
+          status: "new",
+          created_at: new Date().toISOString()
+        }
+      ]);
+
+      baseReply = "Perfetto 🙌 Ti blocco la disponibilità. Come ti chiami?";
+    }
+
+    // AI rewrite
+    const reply = await rewrite(baseReply, lang);
 
     // SAVE AI
     await supabase.from("conversations").insert([
