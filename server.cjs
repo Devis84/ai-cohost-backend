@@ -1,21 +1,14 @@
-import express from "express";
-import bodyParser from "body-parser";
-import axios from "axios";
-import dotenv from "dotenv";
-import { createClient } from "@supabase/supabase-js";
-import path from "path";
-import { fileURLToPath } from "url";
-
-dotenv.config();
+const express = require("express");
+const bodyParser = require("body-parser");
+const axios = require("axios");
+require("dotenv").config();
+const { createClient } = require("@supabase/supabase-js");
+const path = require("path");
 
 const app = express();
 app.use(bodyParser.json());
 
-// FIX PATH (__dirname)
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// 🔥 SERVE FILE STATICI (QUESTO È IL FIX)
+// 🔥 SERVE DASHBOARD
 app.use(express.static(__dirname));
 
 // =============================
@@ -41,7 +34,7 @@ const sessions = {};
 const takeover = new Set();
 
 // =============================
-// SEND MESSAGE
+// SEND
 // =============================
 async function send(to, text) {
   try {
@@ -65,7 +58,7 @@ async function send(to, text) {
 }
 
 // =============================
-// GET PROPERTY INFO
+// PROPERTY
 // =============================
 async function getProperty(propertyId) {
   const { data, error } = await supabase
@@ -74,25 +67,16 @@ async function getProperty(propertyId) {
     .eq("property_id", propertyId)
     .single();
 
-  if (error) {
-    console.error("PROPERTY ERROR:", error);
-    return null;
-  }
-
+  if (error) return null;
   return data;
 }
 
 // =============================
-// SAVE MESSAGE
+// SAVE
 // =============================
 async function saveMessage(phone, role, message, propertyId) {
   await supabase.from("messages").insert([
-    {
-      phone,
-      role,
-      message,
-      property_id: propertyId
-    }
+    { phone, role, message, property_id: propertyId }
   ]);
 }
 
@@ -109,36 +93,22 @@ async function notifyHost(phone, text) {
 }
 
 // =============================
-// SIMPLE AI
+// AI SIMPLE
 // =============================
-function smartReply(text, property) {
+function smartReply(text, p) {
   const t = text.toLowerCase();
 
-  if (t.includes("wifi")) {
-    return `📶 WiFi: ${property.wifi}`;
-  }
+  if (t.includes("wifi")) return `📶 WiFi: ${p.wifi}`;
+  if (t.includes("check")) return `🕒 ${p.checkin}`;
+  if (t.includes("parking")) return `🚗 ${p.parking}`;
+  if (t.includes("party")) return `🚫 ${p.house_rules}`;
+  if (t.includes("airport")) return `🚕 ${p.transport}`;
 
-  if (t.includes("check")) {
-    return `🕒 Check-in: ${property.checkin}`;
-  }
-
-  if (t.includes("parking")) {
-    return `🚗 ${property.parking}`;
-  }
-
-  if (t.includes("party")) {
-    return `🚫 ${property.house_rules}`;
-  }
-
-  if (t.includes("airport") || t.includes("transport")) {
-    return `🚕 ${property.transport}`;
-  }
-
-  return `🙂 Posso aiutarti con WiFi, check-in, parcheggio e info.`;
+  return "🙂 Posso aiutarti con WiFi, check-in e info.";
 }
 
 // =============================
-// START COMMAND
+// WEBHOOK
 // =============================
 app.post("/webhook", async (req, res) => {
   try {
@@ -148,14 +118,10 @@ app.post("/webhook", async (req, res) => {
     const from = msg.from;
     const text = msg.text?.body;
 
-    if (!sessions[from]) {
-      sessions[from] = {};
-    }
+    if (!sessions[from]) sessions[from] = {};
 
-    // START
     if (text.startsWith("/start")) {
       const propertyId = text.split("pid=")[1];
-
       sessions[from].propertyId = propertyId;
 
       await send(from, "✅ Assistente attivo!");
@@ -209,7 +175,7 @@ app.get("/conversations", async (req, res) => {
 });
 
 // =============================
-// START SERVER
+// START
 // =============================
 app.listen(process.env.PORT || 3000, () => {
   console.log("🚀 Server running");
