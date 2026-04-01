@@ -9,7 +9,7 @@ const app = express();
 app.use(bodyParser.json());
 
 // 🔥 SERVE DASHBOARD
-app.use(express.static(__dirname));
+app.use(express.static("public"));
 
 // =============================
 // ENV
