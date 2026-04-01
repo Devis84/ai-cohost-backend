@@ -8,8 +8,14 @@ const path = require("path");
 const app = express();
 app.use(bodyParser.json());
 
-// 🔥 SERVE DASHBOARD
-app.use(express.static("public"));
+// =============================
+// STATIC FILES (FIX DEFINITIVO)
+// =============================
+app.use(express.static(path.join(__dirname, "public")));
+
+app.get("/dashboard.html", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "dashboard.html"));
+});
 
 // =============================
 // ENV
@@ -34,7 +40,7 @@ const sessions = {};
 const takeover = new Set();
 
 // =============================
-// SEND
+// SEND MESSAGE
 // =============================
 async function send(to, text) {
   try {
@@ -58,7 +64,7 @@ async function send(to, text) {
 }
 
 // =============================
-// PROPERTY
+// GET PROPERTY
 // =============================
 async function getProperty(propertyId) {
   const { data, error } = await supabase
@@ -67,16 +73,25 @@ async function getProperty(propertyId) {
     .eq("property_id", propertyId)
     .single();
 
-  if (error) return null;
+  if (error) {
+    console.error("PROPERTY ERROR:", error);
+    return null;
+  }
+
   return data;
 }
 
 // =============================
-// SAVE
+// SAVE MESSAGE
 // =============================
 async function saveMessage(phone, role, message, propertyId) {
   await supabase.from("messages").insert([
-    { phone, role, message, property_id: propertyId }
+    {
+      phone,
+      role,
+      message,
+      property_id: propertyId
+    }
   ]);
 }
 
@@ -93,18 +108,18 @@ async function notifyHost(phone, text) {
 }
 
 // =============================
-// AI SIMPLE
+// SIMPLE AI
 // =============================
 function smartReply(text, p) {
   const t = text.toLowerCase();
 
   if (t.includes("wifi")) return `📶 WiFi: ${p.wifi}`;
-  if (t.includes("check")) return `🕒 ${p.checkin}`;
+  if (t.includes("check")) return `🕒 Check-in: ${p.checkin}`;
   if (t.includes("parking")) return `🚗 ${p.parking}`;
   if (t.includes("party")) return `🚫 ${p.house_rules}`;
-  if (t.includes("airport")) return `🚕 ${p.transport}`;
+  if (t.includes("airport") || t.includes("transport")) return `🚕 ${p.transport}`;
 
-  return "🙂 Posso aiutarti con WiFi, check-in e info.";
+  return "🙂 Posso aiutarti con WiFi, check-in, parcheggio e info.";
 }
 
 // =============================
@@ -120,6 +135,7 @@ app.post("/webhook", async (req, res) => {
 
     if (!sessions[from]) sessions[from] = {};
 
+    // START COMMAND
     if (text.startsWith("/start")) {
       const propertyId = text.split("pid=")[1];
       sessions[from].propertyId = propertyId;
@@ -175,7 +191,7 @@ app.get("/conversations", async (req, res) => {
 });
 
 // =============================
-// START
+// START SERVER
 // =============================
 app.listen(process.env.PORT || 3000, () => {
   console.log("🚀 Server running");
