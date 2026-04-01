@@ -1,92 +1,66 @@
-<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<!DOCTYPE html>
 <html>
 <head>
-  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-  <meta http-equiv="Content-Style-Type" content="text/css">
-  <title></title>
-  <meta name="Generator" content="Cocoa HTML Writer">
-  <meta name="CocoaVersion" content="2685.4">
-  <style type="text/css">
-    p.p1 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Times; -webkit-text-stroke: #000000}
-    p.p2 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Times; -webkit-text-stroke: #000000; min-height: 14.0px}
-    span.s1 {font-kerning: none}
-  </style>
+  <meta charset="UTF-8">
+  <title>AI Co-Host Dashboard</title>
 </head>
 <body>
-<p class="p1"><span class="s1">&lt;!DOCTYPE html&gt;</span></p>
-<p class="p1"><span class="s1">&lt;html&gt;</span></p>
-<p class="p1"><span class="s1">&lt;head&gt;</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>&lt;title&gt;AI Co-Host Dashboard&lt;/title&gt;</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>&lt;meta charset="UTF-8"&gt;</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>&lt;style&gt;</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>body { font-family: Arial; padding: 20px; }</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>.msg { margin-bottom: 15px; padding: 10px; border-bottom: 1px solid #ccc; }</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>.guest { color: blue; }</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>.assistant { color: green; }</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>.host { color: red; }</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>button { margin: 5px; }</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>&lt;/style&gt;</span></p>
-<p class="p1"><span class="s1">&lt;/head&gt;</span></p>
-<p class="p1"><span class="s1">&lt;body&gt;</span></p>
-<p class="p2"><span class="s1"></span><br></p>
-<p class="p1"><span class="s1">&lt;h2&gt;📊 Conversations&lt;/h2&gt;</span></p>
-<p class="p2"><span class="s1"></span><br></p>
-<p class="p1"><span class="s1">&lt;button onclick="load()"&gt;🔄 Refresh&lt;/button&gt;</span></p>
-<p class="p2"><span class="s1"></span><br></p>
-<p class="p1"><span class="s1">&lt;div id="data"&gt;&lt;/div&gt;</span></p>
-<p class="p2"><span class="s1"></span><br></p>
-<p class="p1"><span class="s1">&lt;h3&gt;👤 Host Control&lt;/h3&gt;</span></p>
-<p class="p2"><span class="s1"></span><br></p>
-<p class="p1"><span class="s1">&lt;input id="phone" placeholder="Phone"&gt;</span></p>
-<p class="p1"><span class="s1">&lt;input id="message" placeholder="Message"&gt;</span></p>
-<p class="p2"><span class="s1"></span><br></p>
-<p class="p1"><span class="s1">&lt;button onclick="sendHost()"&gt;Send&lt;/button&gt;</span></p>
-<p class="p1"><span class="s1">&lt;button onclick="takeover(true)"&gt;Takeover ON&lt;/button&gt;</span></p>
-<p class="p1"><span class="s1">&lt;button onclick="takeover(false)"&gt;Takeover OFF&lt;/button&gt;</span></p>
-<p class="p2"><span class="s1"></span><br></p>
-<p class="p1"><span class="s1">&lt;script&gt;</span></p>
-<p class="p1"><span class="s1">async function load() {</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>const res = await fetch("/conversations");</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>const data = await res.json();</span></p>
-<p class="p2"><span class="s1"></span><br></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>document.getElementById("data").innerHTML =</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>data.map(m =&gt; `</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">      </span>&lt;div class="msg ${m.role}"&gt;</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>&lt;b&gt;${m.phone}&lt;/b&gt; (${m.role})&lt;br/&gt;</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>${m.message}</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">      </span>&lt;/div&gt;</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>`).join("");</span></p>
-<p class="p1"><span class="s1">}</span></p>
-<p class="p2"><span class="s1"></span><br></p>
-<p class="p1"><span class="s1">async function sendHost() {</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>await fetch("/host-send", {</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>method: "POST",</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>headers: { "Content-Type": "application/json" },</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>body: JSON.stringify({</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">      </span>phone: document.getElementById("phone").value,</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">      </span>message: document.getElementById("message").value</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>})</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>});</span></p>
-<p class="p1"><span class="s1">}</span></p>
-<p class="p2"><span class="s1"></span><br></p>
-<p class="p1"><span class="s1">async function takeover(active) {</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>await fetch("/takeover", {</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>method: "POST",</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>headers: { "Content-Type": "application/json" },</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>body: JSON.stringify({</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">      </span>phone: document.getElementById("phone").value,</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">      </span>active</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>})</span></p>
-<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>});</span></p>
-<p class="p1"><span class="s1">}</span></p>
-<p class="p2"><span class="s1"></span><br></p>
-<p class="p1"><span class="s1">// auto refresh</span></p>
-<p class="p1"><span class="s1">setInterval(load, 3000);</span></p>
-<p class="p2"><span class="s1"></span><br></p>
-<p class="p1"><span class="s1">load();</span></p>
-<p class="p1"><span class="s1">&lt;/script&gt;</span></p>
-<p class="p2"><span class="s1"></span><br></p>
-<p class="p1"><span class="s1">&lt;/body&gt;</span></p>
-<p class="p1"><span class="s1">&lt;/html&gt;</span></p>
+
+<h2>📊 Conversations</h2>
+
+<button onclick="load()">Refresh</button>
+
+<div id="data"></div>
+
+<h3>Host Control</h3>
+
+<input id="phone" placeholder="Phone"><br><br>
+<input id="message" placeholder="Message"><br><br>
+
+<button onclick="sendHost()">Send</button>
+<button onclick="takeover(true)">Takeover ON</button>
+<button onclick="takeover(false)">Takeover OFF</button>
+
+<script>
+async function load() {
+  const res = await fetch("/conversations");
+  const data = await res.json();
+
+  document.getElementById("data").innerHTML =
+    data.map(m => `
+      <p>
+        <b>${m.phone}</b> (${m.role})<br>
+        ${m.message}
+      </p>
+      <hr>
+    `).join("");
+}
+
+async function sendHost() {
+  await fetch("/host-send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      phone: document.getElementById("phone").value,
+      message: document.getElementById("message").value
+    })
+  });
+}
+
+async function takeover(active) {
+  await fetch("/takeover", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      phone: document.getElementById("phone").value,
+      active
+    })
+  });
+}
+
+setInterval(load, 3000);
+load();
+</script>
+
 </body>
 </html>
