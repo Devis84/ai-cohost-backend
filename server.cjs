@@ -6,25 +6,31 @@ const { createClient } = require("@supabase/supabase-js");
 const app = express();
 app.use(bodyParser.json());
 
+// ✅ SERVE DASHBOARD.HTML
+app.use(express.static(__dirname));
+
 // ============================
 // ENV
+// ============================
+const VERIFY_TOKEN = "123456";
+const HOST_PHONE = process.env.HOST_PHONE;
+
+// ============================
+// SUPABASE
 // ============================
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
 
-const VERIFY_TOKEN = "123456";
-const HOST_PHONE = process.env.HOST_PHONE;
-
 // ============================
-// STATE
+// SESSIONI
 // ============================
 const sessions = new Map();
 const takeover = new Set();
 
 // ============================
-// VERIFY
+// VERIFY WEBHOOK
 // ============================
 app.get("/webhook", (req, res) => {
   if (
@@ -37,38 +43,66 @@ app.get("/webhook", (req, res) => {
 });
 
 // ============================
-// DB
+// DB FUNCTIONS
 // ============================
 async function getProperty(propertyId) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("property_info")
     .select("*")
     .eq("property_id", propertyId)
     .single();
 
+  if (error) {
+    console.error("PROPERTY ERROR:", error);
+    return null;
+  }
+
   return data;
+}
+
+async function getHistory(phone) {
+  const { data } = await supabase
+    .from("messages")
+    .select("role, message")
+    .eq("phone", phone)
+    .order("created_at", { ascending: false })
+    .limit(10);
+
+  return (data || []).reverse();
 }
 
 async function saveMessage(phone, role, text, propertyId) {
   await supabase.from("messages").insert([
-    { phone, role, message: text, property_id: propertyId },
+    {
+      phone,
+      role,
+      message: text,
+      property_id: propertyId,
+    },
   ]);
 }
 
 // ============================
-// OPENAI
+// AI WITH MEMORY
 // ============================
-async function askAI(message, property) {
+async function askAI(message, property, history) {
   try {
-    const prompt = `
-You are a professional Airbnb co-host assistant.
+    const messages = [
+      {
+        role: "system",
+        content: `
+You are an Airbnb co-host assistant.
 
-IMPORTANT:
-- You ONLY answer using the property information provided.
-- You DO NOT invent information.
-- You DO NOT talk about booking, pricing, availability.
-- You ONLY help guests during their stay.
-
+RULES:
+- ONLY use provided property data
+- DO NOT invent information
+- NO booking, NO pricing
+- Be natural and helpful
+        `,
+      },
+      {
+        role: "system",
+        content: `
 PROPERTY DATA:
 WiFi: ${property.wifi}
 Check-in: ${property.checkin}
@@ -79,18 +113,23 @@ Restaurants: ${property.restaurants}
 Transport: ${property.transport}
 Location: ${property.location_info}
 Emergency: ${property.emergency_contact}
-
-User question:
-"${message}"
-
-Answer naturally and clearly.
-`;
+        `,
+      },
+      ...history.map((h) => ({
+        role: h.role === "assistant" ? "assistant" : "user",
+        content: h.message,
+      })),
+      {
+        role: "user",
+        content: message,
+      },
+    ];
 
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
         model: "gpt-4o-mini",
-        messages: [{ role: "user", content: prompt }],
+        messages,
         temperature: 0.3,
       },
       {
@@ -115,30 +154,33 @@ function fallback(msg, p) {
 
   if (t.includes("wifi")) return p.wifi;
   if (t.includes("check")) return p.checkin;
-  if (t.includes("parcheggio") || t.includes("parking")) return p.parking;
-  if (t.includes("regole") || t.includes("rules") || t.includes("party"))
-    return p.house_rules;
+  if (t.includes("parking") || t.includes("parcheggio")) return p.parking;
+  if (t.includes("party") || t.includes("rules")) return p.house_rules;
 
-  return "🙂 Posso aiutarti con WiFi, check-in, parcheggio o regole.";
+  return "🙂 Posso aiutarti con info sulla casa.";
 }
 
 // ============================
-// SEND
+// SEND WHATSAPP
 // ============================
 async function send(to, text) {
-  await axios.post(
-    `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to,
-      text: { body: text },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+  try {
+    await axios.post(
+      `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to,
+        text: { body: text },
       },
-    }
-  );
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        },
+      }
+    );
+  } catch (err) {
+    console.error("WHATSAPP ERROR:", err.response?.data || err.message);
+  }
 }
 
 // ============================
@@ -149,7 +191,20 @@ async function notifyHost(phone, text) {
 }
 
 // ============================
-// MAIN
+// DASHBOARD API
+// ============================
+app.get("/conversations", async (req, res) => {
+  const { data } = await supabase
+    .from("messages")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  res.json(data);
+});
+
+// ============================
+// MAIN WEBHOOK
 // ============================
 app.post("/webhook", async (req, res) => {
   try {
@@ -159,9 +214,11 @@ app.post("/webhook", async (req, res) => {
     const from = msg.from;
     const text = msg.text?.body || "";
 
-    console.log("MSG:", from, text);
+    console.log("INCOMING:", from, text);
 
+    // ========================
     // HOST COMMANDS
+    // ========================
     if (from === HOST_PHONE) {
       if (text.startsWith("/takeover")) {
         const target = text.split(" ")[1];
@@ -182,7 +239,9 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    // START
+    // ========================
+    // START SESSION
+    // ========================
     if (text.startsWith("/start")) {
       const match = text.match(/pid=([a-zA-Z0-9-]+)/);
       if (match) {
@@ -201,8 +260,14 @@ app.post("/webhook", async (req, res) => {
 
     const property = await getProperty(propertyId);
 
-    await saveMessage(from, "guest", text, propertyId);
+    if (!property) {
+      await send(from, "⚠️ Errore caricamento casa.");
+      return res.sendStatus(200);
+    }
 
+    const history = await getHistory(from);
+
+    await saveMessage(from, "user", text, propertyId);
     await notifyHost(from, text);
 
     if (takeover.has(from)) {
@@ -210,25 +275,24 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // AI FIRST
-    let reply = await askAI(text, property);
+    let reply = await askAI(text, property, history);
 
-    // FALLBACK
-    if (!reply || reply.length < 5) {
+    if (!reply) {
       reply = fallback(text, property);
     }
 
     await saveMessage(from, "assistant", reply, propertyId);
-
     await send(from, reply);
 
     res.sendStatus(200);
   } catch (err) {
-    console.error(err);
+    console.error("SERVER ERROR:", err);
     res.sendStatus(500);
   }
 });
 
+// ============================
+// START SERVER
 // ============================
 app.listen(process.env.PORT || 3000, () => {
   console.log("🚀 Server running");
