@@ -1,252 +1,156 @@
 const express = require("express");
+const bodyParser = require("body-parser");
 const axios = require("axios");
 const { createClient } = require("@supabase/supabase-js");
-const OpenAI = require("openai");
 
 const app = express();
-app.use(express.json());
+app.use(bodyParser.json());
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+const VERIFY_TOKEN = "123456";
+
+// ============================
+// 🔥 WEBHOOK VERIFY
+// ============================
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("Webhook verificato!");
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
+  }
 });
 
-const processed = new Set();
+// ============================
+// 🔥 FETCH PROPERTY INFO
+// ============================
+async function getPropertyInfo(propertyId) {
+  const { data, error } = await supabase
+    .from("property_info")
+    .select("*")
+    .eq("property_id", propertyId)
+    .single();
 
-// ✅ PROPERTY REALE
-const PROPERTY_ID = "80ffd815-7985-47a1-84d6-c9463bf13590";
+  if (error) {
+    console.error("❌ PROPERTY ERROR:", error);
+    return null;
+  }
 
-// =======================
-// FORMAT PROPERTY
-// =======================
-
-function formatProperty(p) {
-  return {
-    name: p.property_name,
-    wifi: p.wifi_name && p.wifi_password
-      ? `WiFi: ${p.wifi_name} / ${p.wifi_password}`
-      : null,
-    checkin: p.checkin_time,
-    checkout: p.checkout_time,
-    rules: p.house_rules,
-    instructions: p.checkin_instructions,
-    parking: p.parking || null
-  };
+  return data;
 }
 
-// =======================
-// INTENT DETECTION (MULTI)
-// =======================
+// ============================
+// 🧠 RISPOSTA INTELLIGENTE
+// ============================
+function generateReply(message, property) {
+  if (!property) return "Errore nel recupero informazioni.";
 
-function detectIntents(text) {
-  const t = text.toLowerCase();
+  const text = message.toLowerCase();
 
-  return {
-    wifi: t.includes("wifi"),
-    checkin: t.includes("check-in") || t.includes("checkin"),
-    checkout: t.includes("checkout") || t.includes("check-out"),
-    rules: t.includes("regole"),
-    parking: t.includes("parcheggio")
-  };
+  if (text.includes("wifi")) {
+    return `📶 WiFi: ${property.wifi}`;
+  }
+
+  if (text.includes("check in")) {
+    return `🕓 Check-in: ${property.checkin}`;
+  }
+
+  if (text.includes("check out")) {
+    return `🕓 Check-out: ${property.checkout}`;
+  }
+
+  if (text.includes("regole") || text.includes("rules")) {
+    return `📋 Regole: ${property.house_rules}`;
+  }
+
+  if (text.includes("parcheggio") || text.includes("parking")) {
+    return `🚗 Parcheggio: ${property.parking}`;
+  }
+
+  if (text.includes("ristoranti")) {
+    return `🍝 Ristoranti: ${property.restaurants}`;
+  }
+
+  if (text.includes("trasport")) {
+    return `🚌 Trasporti: ${property.transport}`;
+  }
+
+  if (text.includes("posizione") || text.includes("location")) {
+    return `📍 Info zona: ${property.location_info}`;
+  }
+
+  if (text.includes("descrizione")) {
+    return `🏡 ${property.description}`;
+  }
+
+  if (text.includes("emergenza") || text.includes("contatto")) {
+    return `📞 ${property.emergency_contact}`;
+  }
+
+  return `🙂 Posso aiutarti con WiFi, check-in, parcheggio, regole o info sulla zona.`;
 }
 
-// =======================
-// QUICK REPLY MULTI
-// =======================
-
-function quickReply(message, property) {
-  const intents = detectIntents(message);
-
-  let responses = [];
-
-  if (intents.wifi && property.wifi)
-    responses.push(property.wifi);
-
-  if (intents.checkin && property.instructions)
-    responses.push(property.instructions);
-
-  if (intents.checkout && property.checkout)
-    responses.push(`Check-out: ${property.checkout}`);
-
-  if (intents.rules && property.rules)
-    responses.push(property.rules);
-
-  if (intents.parking && property.parking)
-    responses.push(property.parking);
-
-  return responses.length > 0 ? responses.join("\n") : null;
-}
-
-// =======================
-// MEMORY (ULTIMI MESSAGGI)
-// =======================
-
-async function getRecentContext(phone) {
-  const { data } = await supabase
-    .from("conversations")
-    .select("role, message")
-    .eq("phone", phone)
-    .order("created_at", { ascending: false })
-    .limit(5);
-
-  return data ? data.reverse() : [];
-}
-
-// =======================
-// AI FALLBACK
-// =======================
-
-async function generateReply(message, property, history) {
-  const prompt = `
-Sei un assistente per una casa vacanze.
-
-DATI CASA:
-${JSON.stringify(property)}
-
-CONVERSAZIONE RECENTE:
-${JSON.stringify(history)}
-
-REGOLE:
-- NON parlare di prezzi
-- NON parlare di prenotazioni
-- NON inventare
-- Se non sai → "Non ho questa informazione"
-- NON ripetere cose già dette
-- Risposta breve e naturale
-
-Messaggio:
-${message}
-`;
-
-  const res = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [{ role: "user", content: prompt }]
-  });
-
-  return res.choices[0].message.content;
-}
-
-// =======================
-// SEND
-// =======================
-
-async function sendMessage(to, text) {
+// ============================
+// 📩 SEND WHATSAPP
+// ============================
+async function sendWhatsApp(to, message) {
   await axios.post(
     `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
     {
       messaging_product: "whatsapp",
-      to,
-      text: { body: text }
+      to: to,
+      text: { body: message },
     },
     {
       headers: {
         Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json"
-      }
+        "Content-Type": "application/json",
+      },
     }
   );
 }
 
-// =======================
-// WEBHOOK
-// =======================
-
+// ============================
+// 🔥 MAIN WEBHOOK
+// ============================
 app.post("/webhook", async (req, res) => {
   try {
-    const value = req.body.entry?.[0]?.changes?.[0]?.value;
+    const entry = req.body.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const message = changes?.value?.messages?.[0];
 
-    if (!value?.messages) return res.sendStatus(200);
+    if (!message) return res.sendStatus(200);
 
-    const msg = value.messages[0];
+    const from = message.from;
+    const text = message.text.body;
 
-    if (processed.has(msg.id)) return res.sendStatus(200);
-    processed.add(msg.id);
+    console.log("📩 MSG:", text);
 
-    const from = msg.from;
-    const text = msg.text?.body;
+    // 🔥 QUI USIAMO IL TUO PROPERTY ID REALE
+    const propertyId = "80ffd815-7985-47a1-84d6-c9463bf13590";
 
-    if (!text) return res.sendStatus(200);
+    const property = await getPropertyInfo(propertyId);
 
-    // =======================
-    // PROPERTY
-    // =======================
+    const reply = generateReply(text, property);
 
-    const { data: propertyRaw, error } = await supabase
-      .from("properties")
-      .select("*")
-      .eq("id", PROPERTY_ID)
-      .single();
-
-    if (error || !propertyRaw) {
-      console.log("❌ PROPERTY ERROR:", error);
-      await sendMessage(from, "Errore interno. Contatta l'host.");
-      return res.sendStatus(200);
-    }
-
-    const property = formatProperty(propertyRaw);
-
-    // =======================
-    // SAVE USER
-    // =======================
-
-    await supabase.from("conversations").insert([
-      {
-        phone: from,
-        role: "guest",
-        message: text
-      }
-    ]);
-
-    // =======================
-    // QUICK RESPONSE
-    // =======================
-
-    let reply = quickReply(text, property);
-
-    // =======================
-    // AI FALLBACK (CON MEMORY)
-    // =======================
-
-    if (!reply) {
-      const history = await getRecentContext(from);
-      reply = await generateReply(text, property, history);
-    }
-
-    // sicurezza
-    if (!reply) {
-      reply = "Non ho questa informazione, contatta l'host.";
-    }
-
-    // =======================
-    // SAVE AI
-    // =======================
-
-    await supabase.from("conversations").insert([
-      {
-        phone: from,
-        role: "assistant",
-        message: reply
-      }
-    ]);
-
-    // =======================
-    // SEND
-    // =======================
-
-    await sendMessage(from, reply);
+    await sendWhatsApp(from, reply);
 
     res.sendStatus(200);
-
   } catch (err) {
-    console.log("🔥 ERROR:", err.message);
+    console.error("❌ ERROR:", err);
     res.sendStatus(500);
   }
 });
 
-app.listen(process.env.PORT || 3001, () => {
-  console.log("✅ COHOST PRO V2 RUNNING");
+// ============================
+app.listen(process.env.PORT || 3000, () => {
+  console.log("🚀 Server running");
 });
