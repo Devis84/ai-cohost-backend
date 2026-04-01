@@ -18,16 +18,13 @@ const openai = new OpenAI({
 const processed = new Set();
 
 // =======================
-// LANGUAGE DETECTION
+// LANGUAGE
 // =======================
 
 function detectLanguage(text) {
   if (!text) return "it";
   const t = text.toLowerCase();
-
-  if (t.match(/\b(hello|hi|thanks|price)\b/)) return "en";
-  if (t.match(/\b(hola|gracias)\b/)) return "es";
-
+  if (t.includes("hello")) return "en";
   return "it";
 }
 
@@ -51,6 +48,7 @@ function extractInfo(text) {
   }
 
   let guests = null;
+
   if (t.includes("solo")) guests = 1;
 
   const nums = t.match(/\d+/g);
@@ -70,19 +68,30 @@ function nights(d) {
 }
 
 // =======================
-// AI STYLE (SOLO RISCRITTURA)
+// INTENT EXTRA
+// =======================
+
+function isCheapQuestion(text) {
+  const t = text.toLowerCase();
+  return t.includes("costa meno") || t.includes("economico");
+}
+
+// =======================
+// CLEAN AI
 // =======================
 
 async function rewrite(text, lang) {
+  if (!text) return "Scusa, puoi ripetere?";
+
   const prompt = `
-Riscrivi questo messaggio in ${lang} in modo:
+Riscrivi questo messaggio in ${lang}:
 - naturale
-- amichevole
 - breve
-- umano
+- senza virgolette
+- tono umano
 
 Messaggio:
-"${text}"
+${text}
 `;
 
   const res = await openai.chat.completions.create({
@@ -90,7 +99,12 @@ Messaggio:
     messages: [{ role: "user", content: prompt }]
   });
 
-  return res.choices[0].message.content;
+  let out = res.choices[0].message.content;
+
+  // safety remove quotes
+  out = out.replace(/^["']|["']$/g, "");
+
+  return out;
 }
 
 // =======================
@@ -148,16 +162,28 @@ app.post("/webhook", async (req, res) => {
       if (!finalGuests && h.guest_count) finalGuests = h.guest_count;
     }
 
-    // FLOW
-    let baseReply;
+    // =======================
+    // FLOW LOGIC
+    // =======================
 
-    if (!finalMonth) {
+    let baseReply = null;
+
+    // 👉 gestione domanda prezzo economico
+    if (isCheapQuestion(text)) {
+      baseReply = "Di solito i mesi più economici sono giugno e settembre. Luglio e agosto sono più richiesti.";
+    }
+
+    // 👉 flow normale
+    else if (!finalMonth) {
       baseReply = "Per quale mese stai pensando?";
-    } else if (!finalGuests) {
+    } 
+    else if (!finalGuests) {
       baseReply = "Quante persone sarete?";
-    } else if (!finalDates) {
+    } 
+    else if (!finalDates) {
       baseReply = "Hai già delle date precise?";
-    } else {
+    } 
+    else {
       const { data: price } = await supabase
         .from("pricing")
         .select("*")
@@ -168,34 +194,15 @@ app.post("/webhook", async (req, res) => {
         const avg = (price.price_min + price.price_max) / 2;
         const total = Math.round(nights(finalDates) * avg);
 
-        baseReply = `Dal ${finalDates.from} al ${finalDates.to} ${finalMonth} per ${finalGuests} persone siamo intorno ai ${total}€.
-
-Vuoi che controllo la disponibilità?`;
+        baseReply = `Dal ${finalDates.from} al ${finalDates.to} ${finalMonth} per ${finalGuests} persone il totale è circa ${total}€. Vuoi che controlli la disponibilità?`;
       }
     }
 
-    // LEAD TRIGGER
-    if (
-      finalMonth &&
-      finalDates &&
-      finalGuests &&
-      text.toLowerCase().includes("va bene")
-    ) {
-      await supabase.from("leads").insert([
-        {
-          phone: from,
-          month: finalMonth,
-          dates: JSON.stringify(finalDates),
-          guests: finalGuests,
-          status: "new",
-          created_at: new Date().toISOString()
-        }
-      ]);
-
-      baseReply = "Perfetto 🙌 Ti blocco la disponibilità. Come ti chiami?";
+    // fallback sicurezza
+    if (!baseReply) {
+      baseReply = "Puoi darmi qualche dettaglio in più sul soggiorno?";
     }
 
-    // AI rewrite
     const reply = await rewrite(baseReply, lang);
 
     // SAVE AI
