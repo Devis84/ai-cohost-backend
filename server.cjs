@@ -7,7 +7,7 @@ const app = express();
 app.use(bodyParser.json());
 
 // ============================
-// 🔐 ENV
+// ENV
 // ============================
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -17,38 +17,35 @@ const supabase = createClient(
 const VERIFY_TOKEN = "123456";
 
 // ============================
-// 🧠 SESSION (phone → property)
+// SESSION (phone → property)
 // ============================
 const sessions = new Map();
 
 // ============================
-// ✅ WEBHOOK VERIFY
+// WEBHOOK VERIFY
 // ============================
 app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verificato");
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
+  if (
+    req.query["hub.mode"] === "subscribe" &&
+    req.query["hub.verify_token"] === VERIFY_TOKEN
+  ) {
+    return res.status(200).send(req.query["hub.challenge"]);
   }
+  res.sendStatus(403);
 });
 
 // ============================
-// 🔥 GET PROPERTY INFO
+// GET PROPERTY INFO
 // ============================
-async function getPropertyInfo(propertyId) {
+async function getProperty(propertyId) {
   const { data, error } = await supabase
     .from("property_info")
     .select("*")
     .eq("property_id", propertyId)
     .single();
 
-  if (error || !data) {
-    console.error("❌ PROPERTY ERROR:", error);
+  if (error) {
+    console.error("PROPERTY ERROR:", error);
     return null;
   }
 
@@ -56,64 +53,50 @@ async function getPropertyInfo(propertyId) {
 }
 
 // ============================
-// 🧠 CO-HOST REPLY
+// SAVE MESSAGE (HOST CONTROL)
 // ============================
-function generateReply(message, property) {
-  if (!property) {
-    return "⚠️ Non riesco a recuperare le informazioni della casa.";
-  }
-
-  const text = message.toLowerCase();
-
-  if (text.includes("wifi")) {
-    return `📶 WiFi: ${property.wifi}`;
-  }
-
-  if (text.includes("check in") || text.includes("checkin")) {
-    return `🕓 Check-in: ${property.checkin}`;
-  }
-
-  if (text.includes("check out") || text.includes("checkout")) {
-    return `🕓 Check-out: ${property.checkout}`;
-  }
-
-  if (text.includes("regole")) {
-    return `📋 Regole: ${property.house_rules}`;
-  }
-
-  if (text.includes("parcheggio")) {
-    return `🚗 Parcheggio: ${property.parking}`;
-  }
-
-  if (text.includes("ristoranti")) {
-    return `🍝 Ristoranti: ${property.restaurants}`;
-  }
-
-  if (text.includes("trasport")) {
-    return `🚌 Trasporti: ${property.transport}`;
-  }
-
-  if (text.includes("zona") || text.includes("posizione")) {
-    return `📍 ${property.location_info}`;
-  }
-
-  if (text.includes("emergenza")) {
-    return `📞 ${property.emergency_contact}`;
-  }
-
-  return `🙂 Posso aiutarti con WiFi, check-in, parcheggio, regole e info zona.`;
+async function saveMessage(phone, role, text, propertyId) {
+  await supabase.from("messages").insert([
+    {
+      phone,
+      role,
+      message: text,
+      property_id: propertyId,
+    },
+  ]);
 }
 
 // ============================
-// 📩 SEND WHATSAPP
+// AI REPLY
 // ============================
-async function sendWhatsApp(to, message) {
+function generateReply(msg, property) {
+  if (!property) return "Errore recupero dati casa.";
+
+  const text = msg.toLowerCase();
+
+  if (text.includes("wifi")) return `📶 ${property.wifi}`;
+  if (text.includes("check in")) return `🕓 ${property.checkin}`;
+  if (text.includes("check out")) return `🕓 ${property.checkout}`;
+  if (text.includes("parcheggio")) return `🚗 ${property.parking}`;
+  if (text.includes("regole")) return `📋 ${property.house_rules}`;
+  if (text.includes("ristoranti")) return `🍝 ${property.restaurants}`;
+  if (text.includes("trasporti")) return `🚌 ${property.transport}`;
+  if (text.includes("zona")) return `📍 ${property.location_info}`;
+  if (text.includes("emergenza")) return `📞 ${property.emergency_contact}`;
+
+  return "🙂 Posso aiutarti con WiFi, check-in, parcheggio e info utili.";
+}
+
+// ============================
+// SEND WHATSAPP
+// ============================
+async function send(to, text) {
   await axios.post(
     `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
     {
       messaging_product: "whatsapp",
-      to: to,
-      text: { body: message },
+      to,
+      text: { body: text },
     },
     {
       headers: {
@@ -125,57 +108,70 @@ async function sendWhatsApp(to, message) {
 }
 
 // ============================
-// 🔥 MAIN WEBHOOK
+// MAIN
 // ============================
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
+    const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    if (!msg) return res.sendStatus(200);
 
-    const message = value?.messages?.[0];
-    if (!message) return res.sendStatus(200);
+    const from = msg.from;
+    const text = msg.text?.body || "";
 
-    const from = message.from;
-    const text = message.text?.body || "";
-
-    console.log("📩 MSG:", text);
+    console.log("MSG:", text);
 
     // ============================
-    // 🔑 1. PRIMO ACCESSO → prende PID dal referral (QR / link)
+    // 🔥 FIX PID DA TESTO
     // ============================
-    const referralPid =
-      message?.context?.referral?.ref || // click-to-WhatsApp ads / referral
-      req.body?.pid || // fallback eventuale
-      null;
+    if (text.startsWith("/start")) {
+      const match = text.match(/pid=([a-zA-Z0-9-]+)/);
+      if (match) {
+        const pid = match[1];
+        sessions.set(from, pid);
 
-    if (referralPid) {
-      sessions.set(from, referralPid);
-      console.log("🔗 SESSION SET:", from, referralPid);
+        await send(from, "✅ Assistente attivato per la tua casa!");
+        return res.sendStatus(200);
+      }
     }
 
     // ============================
-    // 🔁 2. RECUPERA PROPERTY DA SESSION
+    // SESSION
     // ============================
     const propertyId = sessions.get(from);
 
     if (!propertyId) {
-      await sendWhatsApp(
-        from,
-        "👋 Scansiona il QR code della casa per iniziare."
-      );
+      await send(from, "📲 Usa il link o QR della casa per iniziare.");
       return res.sendStatus(200);
     }
 
-    const property = await getPropertyInfo(propertyId);
+    // ============================
+    // SAVE USER MESSAGE
+    // ============================
+    await saveMessage(from, "guest", text, propertyId);
 
+    // ============================
+    // PROPERTY
+    // ============================
+    const property = await getProperty(propertyId);
+
+    // ============================
+    // AI REPLY
+    // ============================
     const reply = generateReply(text, property);
 
-    await sendWhatsApp(from, reply);
+    // ============================
+    // SAVE AI MESSAGE
+    // ============================
+    await saveMessage(from, "assistant", reply, propertyId);
+
+    // ============================
+    // SEND
+    // ============================
+    await send(from, reply);
 
     res.sendStatus(200);
   } catch (err) {
-    console.error("❌ ERROR:", err);
+    console.error("ERROR:", err);
     res.sendStatus(500);
   }
 });
