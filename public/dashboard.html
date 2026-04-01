@@ -1,21 +1,84 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="UTF-8">
   <title>AI Co-Host Dashboard</title>
+  <meta charset="UTF-8">
+
+  <style>
+    body {
+      font-family: Arial;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+
+    h2 {
+      margin-bottom: 10px;
+    }
+
+    .chat {
+      background: white;
+      padding: 15px;
+      margin-bottom: 20px;
+      border-radius: 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    }
+
+    .phone {
+      font-weight: bold;
+      margin-bottom: 10px;
+    }
+
+    .msg {
+      padding: 8px 12px;
+      margin: 5px 0;
+      border-radius: 8px;
+      max-width: 70%;
+    }
+
+    .guest {
+      background: #e3f2fd;
+      align-self: flex-start;
+    }
+
+    .assistant {
+      background: #e8f5e9;
+      align-self: flex-end;
+    }
+
+    .host {
+      background: #fff3e0;
+      align-self: flex-end;
+    }
+
+    .messages {
+      display: flex;
+      flex-direction: column;
+    }
+
+    input {
+      margin: 5px;
+      padding: 5px;
+    }
+
+    button {
+      margin: 5px;
+      padding: 5px 10px;
+      cursor: pointer;
+    }
+  </style>
 </head>
+
 <body>
 
 <h2>📊 Conversations</h2>
-
-<button onclick="load()">Refresh</button>
+<button onclick="load()">🔄 Refresh</button>
 
 <div id="data"></div>
 
-<h3>Host Control</h3>
+<h2>🧑‍💼 Host Control</h2>
 
-<input id="phone" placeholder="Phone"><br><br>
-<input id="message" placeholder="Message"><br><br>
+<input id="phone" placeholder="Phone">
+<input id="message" placeholder="Message">
 
 <button onclick="sendHost()">Send</button>
 <button onclick="takeover(true)">Takeover ON</button>
@@ -26,18 +89,35 @@ async function load() {
   const res = await fetch("/conversations");
   const data = await res.json();
 
-  document.getElementById("data").innerHTML =
-    data.map(m => `
-      <p>
-        <b>${m.phone}</b> (${m.role})<br>
-        ${m.message}
-      </p>
-      <hr>
-    `).join("");
+  const grouped = {};
+
+  data.forEach(m => {
+    if (!grouped[m.phone]) grouped[m.phone] = [];
+    grouped[m.phone].push(m);
+  });
+
+  const html = Object.keys(grouped).map(phone => {
+    const messages = grouped[phone]
+      .map(m => `
+        <div class="msg ${m.role}">
+          <b>${m.role}</b><br/>
+          ${m.message}
+        </div>
+      `).join("");
+
+    return `
+      <div class="chat">
+        <div class="phone">📱 ${phone}</div>
+        <div class="messages">${messages}</div>
+      </div>
+    `;
+  }).join("");
+
+  document.getElementById("data").innerHTML = html;
 }
 
 async function sendHost() {
-  await fetch("/host-send", {
+  await fetch("/host-message", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
