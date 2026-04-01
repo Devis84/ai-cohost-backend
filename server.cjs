@@ -17,50 +17,108 @@ const openai = new OpenAI({
 
 const processed = new Set();
 
-// ⚠️ METTI ID REALE
+// ✅ PROPERTY REALE
 const PROPERTY_ID = "80ffd815-7985-47a1-84d6-c9463bf13590";
 
 // =======================
-// FORMAT PROPERTY DATA
+// FORMAT PROPERTY
 // =======================
 
 function formatProperty(p) {
   return {
     name: p.property_name,
     wifi: p.wifi_name && p.wifi_password
-      ? `Rete: ${p.wifi_name}, Password: ${p.wifi_password}`
+      ? `WiFi: ${p.wifi_name} / ${p.wifi_password}`
       : null,
     checkin: p.checkin_time,
     checkout: p.checkout_time,
     rules: p.house_rules,
-    instructions: p.checkin_instructions
+    instructions: p.checkin_instructions,
+    parking: p.parking || null
   };
 }
 
 // =======================
-// AI RESPONSE
+// INTENT DETECTION (MULTI)
 // =======================
 
-async function generateReply(message, property) {
+function detectIntents(text) {
+  const t = text.toLowerCase();
+
+  return {
+    wifi: t.includes("wifi"),
+    checkin: t.includes("check-in") || t.includes("checkin"),
+    checkout: t.includes("checkout") || t.includes("check-out"),
+    rules: t.includes("regole"),
+    parking: t.includes("parcheggio")
+  };
+}
+
+// =======================
+// QUICK REPLY MULTI
+// =======================
+
+function quickReply(message, property) {
+  const intents = detectIntents(message);
+
+  let responses = [];
+
+  if (intents.wifi && property.wifi)
+    responses.push(property.wifi);
+
+  if (intents.checkin && property.instructions)
+    responses.push(property.instructions);
+
+  if (intents.checkout && property.checkout)
+    responses.push(`Check-out: ${property.checkout}`);
+
+  if (intents.rules && property.rules)
+    responses.push(property.rules);
+
+  if (intents.parking && property.parking)
+    responses.push(property.parking);
+
+  return responses.length > 0 ? responses.join("\n") : null;
+}
+
+// =======================
+// MEMORY (ULTIMI MESSAGGI)
+// =======================
+
+async function getRecentContext(phone) {
+  const { data } = await supabase
+    .from("conversations")
+    .select("role, message")
+    .eq("phone", phone)
+    .order("created_at", { ascending: false })
+    .limit(5);
+
+  return data ? data.reverse() : [];
+}
+
+// =======================
+// AI FALLBACK
+// =======================
+
+async function generateReply(message, property, history) {
   const prompt = `
 Sei un assistente per una casa vacanze.
 
-CONTESTO CASA:
+DATI CASA:
 ${JSON.stringify(property)}
 
-L’utente è già ospite della casa.
+CONVERSAZIONE RECENTE:
+${JSON.stringify(history)}
 
-REGOLE IMPORTANTI:
+REGOLE:
 - NON parlare di prezzi
 - NON parlare di prenotazioni
-- NON fare domande inutili
-- NON inventare informazioni
-- Rispondi SOLO usando i dati sopra
-- Se l'informazione non esiste, dì che non è disponibile
-- Tono naturale, umano
-- Risposta breve (max 2 frasi)
+- NON inventare
+- Se non sai → "Non ho questa informazione"
+- NON ripetere cose già dette
+- Risposta breve e naturale
 
-Domanda:
+Messaggio:
 ${message}
 `;
 
@@ -70,6 +128,27 @@ ${message}
   });
 
   return res.choices[0].message.content;
+}
+
+// =======================
+// SEND
+// =======================
+
+async function sendMessage(to, text) {
+  await axios.post(
+    `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to,
+      text: { body: text }
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
 }
 
 // =======================
@@ -93,7 +172,7 @@ app.post("/webhook", async (req, res) => {
     if (!text) return res.sendStatus(200);
 
     // =======================
-    // GET PROPERTY
+    // PROPERTY
     // =======================
 
     const { data: propertyRaw, error } = await supabase
@@ -104,13 +183,14 @@ app.post("/webhook", async (req, res) => {
 
     if (error || !propertyRaw) {
       console.log("❌ PROPERTY ERROR:", error);
+      await sendMessage(from, "Errore interno. Contatta l'host.");
       return res.sendStatus(200);
     }
 
     const property = formatProperty(propertyRaw);
 
     // =======================
-    // SAVE USER MESSAGE
+    // SAVE USER
     // =======================
 
     await supabase.from("conversations").insert([
@@ -122,13 +202,27 @@ app.post("/webhook", async (req, res) => {
     ]);
 
     // =======================
-    // AI RESPONSE
+    // QUICK RESPONSE
     // =======================
 
-    const reply = await generateReply(text, property);
+    let reply = quickReply(text, property);
 
     // =======================
-    // SAVE AI MESSAGE
+    // AI FALLBACK (CON MEMORY)
+    // =======================
+
+    if (!reply) {
+      const history = await getRecentContext(from);
+      reply = await generateReply(text, property, history);
+    }
+
+    // sicurezza
+    if (!reply) {
+      reply = "Non ho questa informazione, contatta l'host.";
+    }
+
+    // =======================
+    // SAVE AI
     // =======================
 
     await supabase.from("conversations").insert([
@@ -140,23 +234,10 @@ app.post("/webhook", async (req, res) => {
     ]);
 
     // =======================
-    // SEND WHATSAPP
+    // SEND
     // =======================
 
-    await axios.post(
-      `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
-      {
-        messaging_product: "whatsapp",
-        to: from,
-        text: { body: reply }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
+    await sendMessage(from, reply);
 
     res.sendStatus(200);
 
@@ -167,5 +248,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(process.env.PORT || 3001, () => {
-  console.log("✅ Server running");
+  console.log("✅ COHOST PRO V2 RUNNING");
 });
