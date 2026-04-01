@@ -1,50 +1,72 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const axios = require("axios");
-const { createClient } = require("@supabase/supabase-js");
+import express from "express";
+import bodyParser from "body-parser";
+import axios from "axios";
+import dotenv from "dotenv";
+import { createClient } from "@supabase/supabase-js";
+import path from "path";
+import { fileURLToPath } from "url";
+
+dotenv.config();
 
 const app = express();
 app.use(bodyParser.json());
 
-// ✅ SERVE DASHBOARD.HTML
+// FIX PATH (__dirname)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// 🔥 SERVE FILE STATICI (QUESTO È IL FIX)
 app.use(express.static(__dirname));
 
-// ============================
+// =============================
 // ENV
-// ============================
-const VERIFY_TOKEN = "123456";
-const HOST_PHONE = process.env.HOST_PHONE;
+// =============================
+const {
+  WHATSAPP_TOKEN,
+  PHONE_NUMBER_ID,
+  SUPABASE_URL,
+  SUPABASE_KEY,
+  HOST_PHONE
+} = process.env;
 
-// ============================
+// =============================
 // SUPABASE
-// ============================
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
+// =============================
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// ============================
-// SESSIONI
-// ============================
-const sessions = new Map();
+// =============================
+// MEMORY
+// =============================
+const sessions = {};
 const takeover = new Set();
 
-// ============================
-// VERIFY WEBHOOK
-// ============================
-app.get("/webhook", (req, res) => {
-  if (
-    req.query["hub.mode"] === "subscribe" &&
-    req.query["hub.verify_token"] === VERIFY_TOKEN
-  ) {
-    return res.status(200).send(req.query["hub.challenge"]);
+// =============================
+// SEND MESSAGE
+// =============================
+async function send(to, text) {
+  try {
+    await axios.post(
+      `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to,
+        text: { body: text }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+  } catch (err) {
+    console.error("SEND ERROR:", err.response?.data || err.message);
   }
-  res.sendStatus(403);
-});
+}
 
-// ============================
-// DB FUNCTIONS
-// ============================
+// =============================
+// GET PROPERTY INFO
+// =============================
 async function getProperty(propertyId) {
   const { data, error } = await supabase
     .from("property_info")
@@ -60,198 +82,87 @@ async function getProperty(propertyId) {
   return data;
 }
 
-async function getHistory(phone) {
-  const { data } = await supabase
-    .from("messages")
-    .select("role, message")
-    .eq("phone", phone)
-    .order("created_at", { ascending: false })
-    .limit(10);
-
-  return (data || []).reverse();
-}
-
-async function saveMessage(phone, role, text, propertyId) {
+// =============================
+// SAVE MESSAGE
+// =============================
+async function saveMessage(phone, role, message, propertyId) {
   await supabase.from("messages").insert([
     {
       phone,
       role,
-      message: text,
-      property_id: propertyId,
-    },
+      message,
+      property_id: propertyId
+    }
   ]);
 }
 
-// ============================
-// AI WITH MEMORY
-// ============================
-async function askAI(message, property, history) {
-  try {
-    const messages = [
-      {
-        role: "system",
-        content: `
-You are an Airbnb co-host assistant.
-
-RULES:
-- ONLY use provided property data
-- DO NOT invent information
-- NO booking, NO pricing
-- Be natural and helpful
-        `,
-      },
-      {
-        role: "system",
-        content: `
-PROPERTY DATA:
-WiFi: ${property.wifi}
-Check-in: ${property.checkin}
-Check-out: ${property.checkout}
-Parking: ${property.parking}
-Rules: ${property.house_rules}
-Restaurants: ${property.restaurants}
-Transport: ${property.transport}
-Location: ${property.location_info}
-Emergency: ${property.emergency_contact}
-        `,
-      },
-      ...history.map((h) => ({
-        role: h.role === "assistant" ? "assistant" : "user",
-        content: h.message,
-      })),
-      {
-        role: "user",
-        content: message,
-      },
-    ];
-
-    const response = await axios.post(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        model: "gpt-4o-mini",
-        messages,
-        temperature: 0.3,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-      }
-    );
-
-    return response.data.choices[0].message.content;
-  } catch (err) {
-    console.error("AI ERROR:", err.message);
-    return null;
-  }
-}
-
-// ============================
-// FALLBACK
-// ============================
-function fallback(msg, p) {
-  const t = msg.toLowerCase();
-
-  if (t.includes("wifi")) return p.wifi;
-  if (t.includes("check")) return p.checkin;
-  if (t.includes("parking") || t.includes("parcheggio")) return p.parking;
-  if (t.includes("party") || t.includes("rules")) return p.house_rules;
-
-  return "🙂 Posso aiutarti con info sulla casa.";
-}
-
-// ============================
-// SEND WHATSAPP
-// ============================
-async function send(to, text) {
-  try {
-    await axios.post(
-      `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
-      {
-        messaging_product: "whatsapp",
-        to,
-        text: { body: text },
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-        },
-      }
-    );
-  } catch (err) {
-    console.error("WHATSAPP ERROR:", err.response?.data || err.message);
-  }
-}
-
-// ============================
+// =============================
 // HOST NOTIFY
-// ============================
+// =============================
 async function notifyHost(phone, text) {
-  await send(HOST_PHONE, `👤 ${phone}\n💬 ${text}`);
+  if (!HOST_PHONE) return;
+
+  await send(
+    HOST_PHONE,
+    `👤 Guest ${phone}\n💬 ${text}`
+  );
 }
 
-// ============================
-// DASHBOARD API
-// ============================
-app.get("/conversations", async (req, res) => {
-  const { data } = await supabase
-    .from("messages")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(50);
+// =============================
+// SIMPLE AI
+// =============================
+function smartReply(text, property) {
+  const t = text.toLowerCase();
 
-  res.json(data);
-});
+  if (t.includes("wifi")) {
+    return `📶 WiFi: ${property.wifi}`;
+  }
 
-// ============================
-// MAIN WEBHOOK
-// ============================
+  if (t.includes("check")) {
+    return `🕒 Check-in: ${property.checkin}`;
+  }
+
+  if (t.includes("parking")) {
+    return `🚗 ${property.parking}`;
+  }
+
+  if (t.includes("party")) {
+    return `🚫 ${property.house_rules}`;
+  }
+
+  if (t.includes("airport") || t.includes("transport")) {
+    return `🚕 ${property.transport}`;
+  }
+
+  return `🙂 Posso aiutarti con WiFi, check-in, parcheggio e info.`;
+}
+
+// =============================
+// START COMMAND
+// =============================
 app.post("/webhook", async (req, res) => {
   try {
     const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (!msg) return res.sendStatus(200);
 
     const from = msg.from;
-    const text = msg.text?.body || "";
+    const text = msg.text?.body;
 
-    console.log("INCOMING:", from, text);
-
-    // ========================
-    // HOST COMMANDS
-    // ========================
-    if (from === HOST_PHONE) {
-      if (text.startsWith("/takeover")) {
-        const target = text.split(" ")[1];
-        takeover.add(target);
-        return res.sendStatus(200);
-      }
-
-      if (text.startsWith("/release")) {
-        const target = text.split(" ")[1];
-        takeover.delete(target);
-        return res.sendStatus(200);
-      }
-
-      const [target, reply] = text.split("|");
-      if (target && reply) {
-        await send(target, reply);
-        return res.sendStatus(200);
-      }
+    if (!sessions[from]) {
+      sessions[from] = {};
     }
 
-    // ========================
-    // START SESSION
-    // ========================
+    // START
     if (text.startsWith("/start")) {
-      const match = text.match(/pid=([a-zA-Z0-9-]+)/);
-      if (match) {
-        sessions.set(from, match[1]);
-        await send(from, "✅ Assistente attivo!");
-        return res.sendStatus(200);
-      }
+      const propertyId = text.split("pid=")[1];
+
+      sessions[from].propertyId = propertyId;
+
+      await send(from, "✅ Assistente attivo!");
+      return res.sendStatus(200);
     }
 
-    const propertyId = sessions.get(from);
+    const propertyId = sessions[from].propertyId;
 
     if (!propertyId) {
       await send(from, "📲 Scansiona il QR della casa.");
@@ -259,15 +170,12 @@ app.post("/webhook", async (req, res) => {
     }
 
     const property = await getProperty(propertyId);
-
     if (!property) {
-      await send(from, "⚠️ Errore caricamento casa.");
+      await send(from, "❌ Errore proprietà.");
       return res.sendStatus(200);
     }
 
-    const history = await getHistory(from);
-
-    await saveMessage(from, "user", text, propertyId);
+    await saveMessage(from, "guest", text, propertyId);
     await notifyHost(from, text);
 
     if (takeover.has(from)) {
@@ -275,25 +183,34 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    let reply = await askAI(text, property, history);
-
-    if (!reply) {
-      reply = fallback(text, property);
-    }
+    const reply = smartReply(text, property);
 
     await saveMessage(from, "assistant", reply, propertyId);
     await send(from, reply);
 
     res.sendStatus(200);
+
   } catch (err) {
-    console.error("SERVER ERROR:", err);
+    console.error("WEBHOOK ERROR:", err);
     res.sendStatus(500);
   }
 });
 
-// ============================
+// =============================
+// DASHBOARD API
+// =============================
+app.get("/conversations", async (req, res) => {
+  const { data } = await supabase
+    .from("messages")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  res.json(data);
+});
+
+// =============================
 // START SERVER
-// ============================
+// =============================
 app.listen(process.env.PORT || 3000, () => {
   console.log("🚀 Server running");
 });
