@@ -17,6 +17,11 @@ const supabase = createClient(
 const VERIFY_TOKEN = "123456";
 
 // ============================
+// 🧠 SESSION (phone → property)
+// ============================
+const sessions = new Map();
+
+// ============================
 // ✅ WEBHOOK VERIFY
 // ============================
 app.get("/webhook", (req, res) => {
@@ -31,24 +36,6 @@ app.get("/webhook", (req, res) => {
     res.sendStatus(403);
   }
 });
-
-// ============================
-// 🔥 GET PROPERTY FROM PHONE
-// ============================
-async function getPropertyByPhone(phone) {
-  const { data, error } = await supabase
-    .from("guest_properties")
-    .select("property_id")
-    .eq("phone", phone)
-    .single();
-
-  if (error || !data) {
-    console.error("❌ MAPPING ERROR:", error);
-    return null;
-  }
-
-  return data.property_id;
-}
 
 // ============================
 // 🔥 GET PROPERTY INFO
@@ -69,74 +56,52 @@ async function getPropertyInfo(propertyId) {
 }
 
 // ============================
-// 🧠 AI RESPONSE (CO-HOST MODE)
+// 🧠 CO-HOST REPLY
 // ============================
 function generateReply(message, property) {
   if (!property) {
-    return "⚠️ Non riesco a recuperare le informazioni della casa. Contatta l’host.";
+    return "⚠️ Non riesco a recuperare le informazioni della casa.";
   }
 
   const text = message.toLowerCase();
 
-  // WIFI
   if (text.includes("wifi")) {
     return `📶 WiFi: ${property.wifi}`;
   }
 
-  // CHECK-IN
   if (text.includes("check in") || text.includes("checkin")) {
     return `🕓 Check-in: ${property.checkin}`;
   }
 
-  // CHECK-OUT
   if (text.includes("check out") || text.includes("checkout")) {
     return `🕓 Check-out: ${property.checkout}`;
   }
 
-  // RULES
-  if (text.includes("regole") || text.includes("rules")) {
-    return `📋 Regole della casa: ${property.house_rules}`;
+  if (text.includes("regole")) {
+    return `📋 Regole: ${property.house_rules}`;
   }
 
-  // PARKING
-  if (text.includes("parcheggio") || text.includes("parking")) {
+  if (text.includes("parcheggio")) {
     return `🚗 Parcheggio: ${property.parking}`;
   }
 
-  // RESTAURANTS
   if (text.includes("ristoranti")) {
-    return `🍝 Ristoranti vicini: ${property.restaurants}`;
+    return `🍝 Ristoranti: ${property.restaurants}`;
   }
 
-  // TRANSPORT
   if (text.includes("trasport")) {
     return `🚌 Trasporti: ${property.transport}`;
   }
 
-  // LOCATION
   if (text.includes("zona") || text.includes("posizione")) {
-    return `📍 Info zona: ${property.location_info}`;
+    return `📍 ${property.location_info}`;
   }
 
-  // DESCRIPTION
-  if (text.includes("casa") || text.includes("appartamento")) {
-    return `🏡 ${property.description}`;
-  }
-
-  // EMERGENCY
-  if (text.includes("emergenza") || text.includes("contatto")) {
+  if (text.includes("emergenza")) {
     return `📞 ${property.emergency_contact}`;
   }
 
-  // DEFAULT
-  return `🙂 Posso aiutarti con:
-- WiFi
-- Check-in / Check-out
-- Regole della casa
-- Parcheggio
-- Ristoranti
-- Trasporti
-- Info zona`;
+  return `🙂 Posso aiutarti con WiFi, check-in, parcheggio, regole e info zona.`;
 }
 
 // ============================
@@ -166,22 +131,38 @@ app.post("/webhook", async (req, res) => {
   try {
     const entry = req.body.entry?.[0];
     const changes = entry?.changes?.[0];
-    const message = changes?.value?.messages?.[0];
+    const value = changes?.value;
 
+    const message = value?.messages?.[0];
     if (!message) return res.sendStatus(200);
 
     const from = message.from;
-    const text = message.text.body;
+    const text = message.text?.body || "";
 
     console.log("📩 MSG:", text);
 
-    // 🔥 PROPERTY DINAMICA
-    const propertyId = await getPropertyByPhone(from);
+    // ============================
+    // 🔑 1. PRIMO ACCESSO → prende PID dal referral (QR / link)
+    // ============================
+    const referralPid =
+      message?.context?.referral?.ref || // click-to-WhatsApp ads / referral
+      req.body?.pid || // fallback eventuale
+      null;
+
+    if (referralPid) {
+      sessions.set(from, referralPid);
+      console.log("🔗 SESSION SET:", from, referralPid);
+    }
+
+    // ============================
+    // 🔁 2. RECUPERA PROPERTY DA SESSION
+    // ============================
+    const propertyId = sessions.get(from);
 
     if (!propertyId) {
       await sendWhatsApp(
         from,
-        "⚠️ Nessuna proprietà associata a questo numero."
+        "👋 Scansiona il QR code della casa per iniziare."
       );
       return res.sendStatus(200);
     }
