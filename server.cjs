@@ -18,7 +18,7 @@ const openai = new OpenAI({
 const processed = new Set();
 
 // =======================
-// PARSER BASE
+// PARSER
 // =======================
 
 function extractInfo(text) {
@@ -27,6 +27,7 @@ function extractInfo(text) {
   let month = null;
   if (t.includes("giugno")) month = "giugno";
   if (t.includes("luglio")) month = "luglio";
+  if (t.includes("maggio")) month = "maggio";
 
   let dates = null;
   const m = t.match(/(\d{1,2})\D+(\d{1,2})/);
@@ -62,21 +63,20 @@ function nights(d) {
 
 async function generateReply(context) {
   const prompt = `
-Sei un assistente per affitti brevi su WhatsApp.
-
-OBIETTIVO:
-- capire cosa manca (mese, date, ospiti)
-- fare UNA domanda alla volta
-- oppure dare prezzo se hai tutto
+Sei un assistente per affitti brevi.
 
 DATI:
 ${JSON.stringify(context)}
 
+OBIETTIVO:
+- capire cosa manca
+- fare UNA domanda alla volta
+- oppure rispondere
+
 REGOLE:
-- NON ripetere domande già fatte
-- NON usare virgolette
-- risposta breve e naturale
-- massimo 2 frasi
+- NON ripetere domande
+- NON usare frasi tipo "mi sembra"
+- breve e naturale
 `;
 
   const res = await openai.chat.completions.create({
@@ -121,73 +121,83 @@ app.post("/webhook", async (req, res) => {
       }
     ]);
 
-    // MEMORY
+    // =======================
+    // MEMORY FIX (IMPORTANTISSIMO)
+    // =======================
+
     const { data: history } = await supabase
       .from("conversations")
       .select("*")
       .eq("phone", from)
-      .order("created_at", { ascending: false })
-      .limit(15);
+      .order("created_at", { ascending: true }); // 👈 ordine corretto
 
     let finalMonth = null;
     let finalDates = null;
     let finalGuests = null;
 
     for (const h of history) {
-      if (!finalMonth && h.guest_month) finalMonth = h.guest_month;
-      if (!finalDates && h.guest_dates) {
-        try { finalDates = JSON.parse(h.guest_dates); } catch {}
+      // 👉 SOVRASCRIVE SEMPRE (ultimo vince)
+      if (h.guest_month) finalMonth = h.guest_month;
+
+      if (h.guest_dates) {
+        try {
+          finalDates = JSON.parse(h.guest_dates);
+        } catch {}
       }
-      if (!finalGuests && h.guest_count) finalGuests = h.guest_count;
+
+      if (h.guest_count) finalGuests = h.guest_count;
     }
 
+    // =======================
     // PRICING
-    let pricingData = null;
+    // =======================
 
-    if (finalMonth) {
-      const { data } = await supabase
+    let priceInfo = null;
+
+    if (finalMonth && finalDates && finalGuests) {
+      const { data: price } = await supabase
         .from("pricing")
         .select("*")
         .eq("month", finalMonth)
         .single();
 
-      if (data) pricingData = data;
+      if (price) {
+        const avg = (price.price_min + price.price_max) / 2;
+        const total = Math.round(nights(finalDates) * avg);
+
+        priceInfo = {
+          total,
+          from: finalDates.from,
+          to: finalDates.to,
+          month: finalMonth,
+          guests: finalGuests
+        };
+      }
     }
 
-    let priceInfo = null;
-
-    if (pricingData && finalDates && finalGuests) {
-      const avg = (pricingData.price_min + pricingData.price_max) / 2;
-      const total = Math.round(nights(finalDates) * avg);
-
-      priceInfo = {
-        total,
-        from: finalDates.from,
-        to: finalDates.to,
-        month: finalMonth,
-        guests: finalGuests
-      };
-    }
-
-    // CONTEXT FOR AI
-    const context = {
-      user_message: text,
-      month: finalMonth,
-      dates: finalDates,
-      guests: finalGuests,
-      price: priceInfo
-    };
+    // =======================
+    // FLOW
+    // =======================
 
     let reply;
 
-    // 👉 SE HO PREZZO → NON CHIEDERE AI
     if (priceInfo) {
       reply = `Dal ${priceInfo.from} al ${priceInfo.to} ${priceInfo.month} per ${priceInfo.guests} persone il totale è circa ${priceInfo.total}€. Vuoi che controlli la disponibilità?`;
     } else {
+      const context = {
+        message: text,
+        month: finalMonth,
+        dates: finalDates,
+        guests: finalGuests
+      };
+
       reply = await generateReply(context);
     }
 
+    // =======================
     // LEAD
+    // =======================
+
     if (
       finalMonth &&
       finalDates &&
