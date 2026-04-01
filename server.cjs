@@ -9,10 +9,17 @@ const app = express();
 app.use(bodyParser.json());
 
 // =============================
-// STATIC FILES (FIX DEFINITIVO)
+// STATIC FIX (CRITICO)
 // =============================
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(path.join(__dirname, "public"), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith(".html")) {
+      res.setHeader("Content-Type", "text/html");
+    }
+  }
+}));
 
+// ROUTE FORZATA
 app.get("/dashboard.html", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "dashboard.html"));
 });
@@ -40,7 +47,7 @@ const sessions = {};
 const takeover = new Set();
 
 // =============================
-// SEND MESSAGE
+// SEND
 // =============================
 async function send(to, text) {
   try {
@@ -64,7 +71,7 @@ async function send(to, text) {
 }
 
 // =============================
-// GET PROPERTY
+// PROPERTY
 // =============================
 async function getProperty(propertyId) {
   const { data, error } = await supabase
@@ -73,25 +80,16 @@ async function getProperty(propertyId) {
     .eq("property_id", propertyId)
     .single();
 
-  if (error) {
-    console.error("PROPERTY ERROR:", error);
-    return null;
-  }
-
+  if (error) return null;
   return data;
 }
 
 // =============================
-// SAVE MESSAGE
+// SAVE
 // =============================
 async function saveMessage(phone, role, message, propertyId) {
   await supabase.from("messages").insert([
-    {
-      phone,
-      role,
-      message,
-      property_id: propertyId
-    }
+    { phone, role, message, property_id: propertyId }
   ]);
 }
 
@@ -101,14 +99,11 @@ async function saveMessage(phone, role, message, propertyId) {
 async function notifyHost(phone, text) {
   if (!HOST_PHONE) return;
 
-  await send(
-    HOST_PHONE,
-    `👤 Guest ${phone}\n💬 ${text}`
-  );
+  await send(HOST_PHONE, `👤 Guest ${phone}\n💬 ${text}`);
 }
 
 // =============================
-// SIMPLE AI
+// AI
 // =============================
 function smartReply(text, p) {
   const t = text.toLowerCase();
@@ -117,9 +112,9 @@ function smartReply(text, p) {
   if (t.includes("check")) return `🕒 Check-in: ${p.checkin}`;
   if (t.includes("parking")) return `🚗 ${p.parking}`;
   if (t.includes("party")) return `🚫 ${p.house_rules}`;
-  if (t.includes("airport") || t.includes("transport")) return `🚕 ${p.transport}`;
+  if (t.includes("airport")) return `🚕 ${p.transport}`;
 
-  return "🙂 Posso aiutarti con WiFi, check-in, parcheggio e info.";
+  return "🙂 Posso aiutarti con WiFi, check-in e info.";
 }
 
 // =============================
@@ -135,7 +130,6 @@ app.post("/webhook", async (req, res) => {
 
     if (!sessions[from]) sessions[from] = {};
 
-    // START COMMAND
     if (text.startsWith("/start")) {
       const propertyId = text.split("pid=")[1];
       sessions[from].propertyId = propertyId;
@@ -190,8 +184,6 @@ app.get("/conversations", async (req, res) => {
   res.json(data);
 });
 
-// =============================
-// START SERVER
 // =============================
 app.listen(process.env.PORT || 3000, () => {
   console.log("🚀 Server running");
