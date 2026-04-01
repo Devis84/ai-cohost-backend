@@ -18,7 +18,7 @@ const openai = new OpenAI({
 const processed = new Set();
 
 // ⚠️ METTI ID REALE
-const PROPERTY_ID = "INSERISCI_ID_REALE";
+const PROPERTY_ID = "80ffd815-7985-47a1-84d6-c9463bf13590";
 
 // =======================
 // FORMAT PROPERTY DATA
