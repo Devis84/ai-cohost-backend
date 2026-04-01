@@ -6,6 +6,9 @@ const { createClient } = require("@supabase/supabase-js");
 const app = express();
 app.use(bodyParser.json());
 
+// ============================
+// 🔐 ENV
+// ============================
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
@@ -14,7 +17,7 @@ const supabase = createClient(
 const VERIFY_TOKEN = "123456";
 
 // ============================
-// 🔥 WEBHOOK VERIFY
+// ✅ WEBHOOK VERIFY
 // ============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -22,7 +25,7 @@ app.get("/webhook", (req, res) => {
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("Webhook verificato!");
+    console.log("✅ Webhook verificato");
     res.status(200).send(challenge);
   } else {
     res.sendStatus(403);
@@ -30,7 +33,25 @@ app.get("/webhook", (req, res) => {
 });
 
 // ============================
-// 🔥 FETCH PROPERTY INFO
+// 🔥 GET PROPERTY FROM PHONE
+// ============================
+async function getPropertyByPhone(phone) {
+  const { data, error } = await supabase
+    .from("guest_properties")
+    .select("property_id")
+    .eq("phone", phone)
+    .single();
+
+  if (error || !data) {
+    console.error("❌ MAPPING ERROR:", error);
+    return null;
+  }
+
+  return data.property_id;
+}
+
+// ============================
+// 🔥 GET PROPERTY INFO
 // ============================
 async function getPropertyInfo(propertyId) {
   const { data, error } = await supabase
@@ -39,7 +60,7 @@ async function getPropertyInfo(propertyId) {
     .eq("property_id", propertyId)
     .single();
 
-  if (error) {
+  if (error || !data) {
     console.error("❌ PROPERTY ERROR:", error);
     return null;
   }
@@ -48,54 +69,74 @@ async function getPropertyInfo(propertyId) {
 }
 
 // ============================
-// 🧠 RISPOSTA INTELLIGENTE
+// 🧠 AI RESPONSE (CO-HOST MODE)
 // ============================
 function generateReply(message, property) {
-  if (!property) return "Errore nel recupero informazioni.";
+  if (!property) {
+    return "⚠️ Non riesco a recuperare le informazioni della casa. Contatta l’host.";
+  }
 
   const text = message.toLowerCase();
 
+  // WIFI
   if (text.includes("wifi")) {
     return `📶 WiFi: ${property.wifi}`;
   }
 
-  if (text.includes("check in")) {
+  // CHECK-IN
+  if (text.includes("check in") || text.includes("checkin")) {
     return `🕓 Check-in: ${property.checkin}`;
   }
 
-  if (text.includes("check out")) {
+  // CHECK-OUT
+  if (text.includes("check out") || text.includes("checkout")) {
     return `🕓 Check-out: ${property.checkout}`;
   }
 
+  // RULES
   if (text.includes("regole") || text.includes("rules")) {
-    return `📋 Regole: ${property.house_rules}`;
+    return `📋 Regole della casa: ${property.house_rules}`;
   }
 
+  // PARKING
   if (text.includes("parcheggio") || text.includes("parking")) {
     return `🚗 Parcheggio: ${property.parking}`;
   }
 
+  // RESTAURANTS
   if (text.includes("ristoranti")) {
-    return `🍝 Ristoranti: ${property.restaurants}`;
+    return `🍝 Ristoranti vicini: ${property.restaurants}`;
   }
 
+  // TRANSPORT
   if (text.includes("trasport")) {
     return `🚌 Trasporti: ${property.transport}`;
   }
 
-  if (text.includes("posizione") || text.includes("location")) {
+  // LOCATION
+  if (text.includes("zona") || text.includes("posizione")) {
     return `📍 Info zona: ${property.location_info}`;
   }
 
-  if (text.includes("descrizione")) {
+  // DESCRIPTION
+  if (text.includes("casa") || text.includes("appartamento")) {
     return `🏡 ${property.description}`;
   }
 
+  // EMERGENCY
   if (text.includes("emergenza") || text.includes("contatto")) {
     return `📞 ${property.emergency_contact}`;
   }
 
-  return `🙂 Posso aiutarti con WiFi, check-in, parcheggio, regole o info sulla zona.`;
+  // DEFAULT
+  return `🙂 Posso aiutarti con:
+- WiFi
+- Check-in / Check-out
+- Regole della casa
+- Parcheggio
+- Ristoranti
+- Trasporti
+- Info zona`;
 }
 
 // ============================
@@ -134,8 +175,16 @@ app.post("/webhook", async (req, res) => {
 
     console.log("📩 MSG:", text);
 
-    // 🔥 QUI USIAMO IL TUO PROPERTY ID REALE
-    const propertyId = "80ffd815-7985-47a1-84d6-c9463bf13590";
+    // 🔥 PROPERTY DINAMICA
+    const propertyId = await getPropertyByPhone(from);
+
+    if (!propertyId) {
+      await sendWhatsApp(
+        from,
+        "⚠️ Nessuna proprietà associata a questo numero."
+      );
+      return res.sendStatus(200);
+    }
 
     const property = await getPropertyInfo(propertyId);
 
