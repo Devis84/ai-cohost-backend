@@ -15,14 +15,16 @@ const supabase = createClient(
 );
 
 const VERIFY_TOKEN = "123456";
+const HOST_PHONE = process.env.HOST_PHONE;
 
 // ============================
-// SESSION (phone → property)
+// SESSION + TAKEOVER
 // ============================
-const sessions = new Map();
+const sessions = new Map(); // phone → property
+const takeover = new Set(); // phone in manual mode
 
 // ============================
-// WEBHOOK VERIFY
+// VERIFY
 // ============================
 app.get("/webhook", (req, res) => {
   if (
@@ -35,60 +37,47 @@ app.get("/webhook", (req, res) => {
 });
 
 // ============================
-// GET PROPERTY INFO
+// DB
 // ============================
 async function getProperty(propertyId) {
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from("property_info")
     .select("*")
     .eq("property_id", propertyId)
     .single();
 
-  if (error) {
-    console.error("PROPERTY ERROR:", error);
-    return null;
-  }
-
   return data;
 }
 
-// ============================
-// SAVE MESSAGE (HOST CONTROL)
-// ============================
 async function saveMessage(phone, role, text, propertyId) {
   await supabase.from("messages").insert([
-    {
-      phone,
-      role,
-      message: text,
-      property_id: propertyId,
-    },
+    { phone, role, message: text, property_id: propertyId },
   ]);
 }
 
 // ============================
 // AI REPLY
 // ============================
-function generateReply(msg, property) {
-  if (!property) return "Errore recupero dati casa.";
+function generateReply(msg, p) {
+  if (!p) return "Errore recupero dati.";
 
-  const text = msg.toLowerCase();
+  const t = msg.toLowerCase();
 
-  if (text.includes("wifi")) return `📶 ${property.wifi}`;
-  if (text.includes("check in")) return `🕓 ${property.checkin}`;
-  if (text.includes("check out")) return `🕓 ${property.checkout}`;
-  if (text.includes("parcheggio")) return `🚗 ${property.parking}`;
-  if (text.includes("regole")) return `📋 ${property.house_rules}`;
-  if (text.includes("ristoranti")) return `🍝 ${property.restaurants}`;
-  if (text.includes("trasporti")) return `🚌 ${property.transport}`;
-  if (text.includes("zona")) return `📍 ${property.location_info}`;
-  if (text.includes("emergenza")) return `📞 ${property.emergency_contact}`;
+  if (t.includes("wifi")) return `📶 ${p.wifi}`;
+  if (t.includes("check in")) return `🕓 ${p.checkin}`;
+  if (t.includes("check out")) return `🕓 ${p.checkout}`;
+  if (t.includes("parcheggio")) return `🚗 ${p.parking}`;
+  if (t.includes("regole")) return `📋 ${p.house_rules}`;
+  if (t.includes("ristoranti")) return `🍝 ${p.restaurants}`;
+  if (t.includes("trasporti")) return `🚌 ${p.transport}`;
+  if (t.includes("zona")) return `📍 ${p.location_info}`;
+  if (t.includes("emergenza")) return `📞 ${p.emergency_contact}`;
 
-  return "🙂 Posso aiutarti con WiFi, check-in, parcheggio e info utili.";
+  return "🙂 Posso aiutarti con WiFi, check-in, parcheggio e info.";
 }
 
 // ============================
-// SEND WHATSAPP
+// SEND
 // ============================
 async function send(to, text) {
   await axios.post(
@@ -101,9 +90,18 @@ async function send(to, text) {
     {
       headers: {
         Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
       },
     }
+  );
+}
+
+// ============================
+// NOTIFY HOST
+// ============================
+async function notifyHost(phone, text) {
+  await send(
+    HOST_PHONE,
+    `👤 Guest: ${phone}\n💬 ${text}`
   );
 }
 
@@ -118,10 +116,38 @@ app.post("/webhook", async (req, res) => {
     const from = msg.from;
     const text = msg.text?.body || "";
 
-    console.log("MSG:", text);
+    console.log("MSG:", from, text);
 
     // ============================
-    // 🔥 FIX PID DA TESTO
+    // HOST COMMANDS
+    // ============================
+    if (from === HOST_PHONE) {
+      if (text.startsWith("/takeover")) {
+        const target = text.split(" ")[1];
+        takeover.add(target);
+        await send(from, `✅ Takeover attivo per ${target}`);
+        return res.sendStatus(200);
+      }
+
+      if (text.startsWith("/release")) {
+        const target = text.split(" ")[1];
+        takeover.delete(target);
+        await send(from, `♻️ AI riattivata per ${target}`);
+        return res.sendStatus(200);
+      }
+
+      // risposta manuale host
+      const target = text.split("|")[0];
+      const reply = text.split("|")[1];
+
+      if (target && reply) {
+        await send(target, reply);
+        return res.sendStatus(200);
+      }
+    }
+
+    // ============================
+    // START PID
     // ============================
     if (text.startsWith("/start")) {
       const match = text.match(/pid=([a-zA-Z0-9-]+)/);
@@ -129,49 +155,46 @@ app.post("/webhook", async (req, res) => {
         const pid = match[1];
         sessions.set(from, pid);
 
-        await send(from, "✅ Assistente attivato per la tua casa!");
+        await send(from, "✅ Assistente attivo!");
         return res.sendStatus(200);
       }
     }
 
-    // ============================
-    // SESSION
-    // ============================
     const propertyId = sessions.get(from);
 
     if (!propertyId) {
-      await send(from, "📲 Usa il link o QR della casa per iniziare.");
+      await send(from, "📲 Scansiona il QR della casa.");
+      return res.sendStatus(200);
+    }
+
+    await saveMessage(from, "guest", text, propertyId);
+
+    // ============================
+    // HOST NOTIFY
+    // ============================
+    await notifyHost(from, text);
+
+    // ============================
+    // TAKEOVER MODE
+    // ============================
+    if (takeover.has(from)) {
+      await send(from, "👤 L’host ti risponderà a breve.");
       return res.sendStatus(200);
     }
 
     // ============================
-    // SAVE USER MESSAGE
-    // ============================
-    await saveMessage(from, "guest", text, propertyId);
-
-    // ============================
-    // PROPERTY
+    // AI
     // ============================
     const property = await getProperty(propertyId);
-
-    // ============================
-    // AI REPLY
-    // ============================
     const reply = generateReply(text, property);
 
-    // ============================
-    // SAVE AI MESSAGE
-    // ============================
     await saveMessage(from, "assistant", reply, propertyId);
 
-    // ============================
-    // SEND
-    // ============================
     await send(from, reply);
 
     res.sendStatus(200);
   } catch (err) {
-    console.error("ERROR:", err);
+    console.error(err);
     res.sendStatus(500);
   }
 });
