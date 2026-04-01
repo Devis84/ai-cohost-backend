@@ -17,66 +17,51 @@ const openai = new OpenAI({
 
 const processed = new Set();
 
+// ⚠️ METTI ID REALE
+const PROPERTY_ID = "INSERISCI_ID_REALE";
+
 // =======================
-// PARSER
+// FORMAT PROPERTY DATA
 // =======================
 
-function extractInfo(text) {
-  const t = text.toLowerCase();
-
-  let month = null;
-  if (t.includes("giugno")) month = "giugno";
-  if (t.includes("luglio")) month = "luglio";
-  if (t.includes("maggio")) month = "maggio";
-
-  let dates = null;
-  const m = t.match(/(\d{1,2})\D+(\d{1,2})/);
-  if (m) {
-    const from = parseInt(m[1]);
-    const to = parseInt(m[2]);
-    if (to > from) dates = { from, to };
-  }
-
-  let guests = null;
-
-  if (t.includes("solo")) guests = 1;
-
-  const nums = t.match(/\d+/g);
-  if (nums) {
-    for (const n of nums) {
-      const num = parseInt(n);
-      if (dates && (num === dates.from || num === dates.to)) continue;
-      if (num <= 10) guests = num;
-    }
-  }
-
-  return { month, dates, guests };
-}
-
-function nights(d) {
-  return d ? d.to - d.from : null;
+function formatProperty(p) {
+  return {
+    name: p.property_name,
+    wifi: p.wifi_name && p.wifi_password
+      ? `Rete: ${p.wifi_name}, Password: ${p.wifi_password}`
+      : null,
+    checkin: p.checkin_time,
+    checkout: p.checkout_time,
+    rules: p.house_rules,
+    instructions: p.checkin_instructions
+  };
 }
 
 // =======================
-// AI CORE
+// AI RESPONSE
 // =======================
 
-async function generateReply(context) {
+async function generateReply(message, property) {
   const prompt = `
-Sei un assistente per affitti brevi.
+Sei un assistente per una casa vacanze.
 
-DATI:
-${JSON.stringify(context)}
+CONTESTO CASA:
+${JSON.stringify(property)}
 
-OBIETTIVO:
-- capire cosa manca
-- fare UNA domanda alla volta
-- oppure rispondere
+L’utente è già ospite della casa.
 
-REGOLE:
-- NON ripetere domande
-- NON usare frasi tipo "mi sembra"
-- breve e naturale
+REGOLE IMPORTANTI:
+- NON parlare di prezzi
+- NON parlare di prenotazioni
+- NON fare domande inutili
+- NON inventare informazioni
+- Rispondi SOLO usando i dati sopra
+- Se l'informazione non esiste, dì che non è disponibile
+- Tono naturale, umano
+- Risposta breve (max 2 frasi)
+
+Domanda:
+${message}
 `;
 
   const res = await openai.chat.completions.create({
@@ -107,118 +92,45 @@ app.post("/webhook", async (req, res) => {
 
     if (!text) return res.sendStatus(200);
 
-    const info = extractInfo(text);
+    // =======================
+    // GET PROPERTY
+    // =======================
 
-    // SAVE USER
+    const { data: propertyRaw, error } = await supabase
+      .from("properties")
+      .select("*")
+      .eq("id", PROPERTY_ID)
+      .single();
+
+    if (error || !propertyRaw) {
+      console.log("❌ PROPERTY ERROR:", error);
+      return res.sendStatus(200);
+    }
+
+    const property = formatProperty(propertyRaw);
+
+    // =======================
+    // SAVE USER MESSAGE
+    // =======================
+
     await supabase.from("conversations").insert([
       {
         phone: from,
         role: "guest",
-        message: text,
-        guest_month: info.month,
-        guest_dates: info.dates ? JSON.stringify(info.dates) : null,
-        guest_count: info.guests
+        message: text
       }
     ]);
 
     // =======================
-    // MEMORY FIX (IMPORTANTISSIMO)
+    // AI RESPONSE
     // =======================
 
-    const { data: history } = await supabase
-      .from("conversations")
-      .select("*")
-      .eq("phone", from)
-      .order("created_at", { ascending: true }); // 👈 ordine corretto
-
-    let finalMonth = null;
-    let finalDates = null;
-    let finalGuests = null;
-
-    for (const h of history) {
-      // 👉 SOVRASCRIVE SEMPRE (ultimo vince)
-      if (h.guest_month) finalMonth = h.guest_month;
-
-      if (h.guest_dates) {
-        try {
-          finalDates = JSON.parse(h.guest_dates);
-        } catch {}
-      }
-
-      if (h.guest_count) finalGuests = h.guest_count;
-    }
+    const reply = await generateReply(text, property);
 
     // =======================
-    // PRICING
+    // SAVE AI MESSAGE
     // =======================
 
-    let priceInfo = null;
-
-    if (finalMonth && finalDates && finalGuests) {
-      const { data: price } = await supabase
-        .from("pricing")
-        .select("*")
-        .eq("month", finalMonth)
-        .single();
-
-      if (price) {
-        const avg = (price.price_min + price.price_max) / 2;
-        const total = Math.round(nights(finalDates) * avg);
-
-        priceInfo = {
-          total,
-          from: finalDates.from,
-          to: finalDates.to,
-          month: finalMonth,
-          guests: finalGuests
-        };
-      }
-    }
-
-    // =======================
-    // FLOW
-    // =======================
-
-    let reply;
-
-    if (priceInfo) {
-      reply = `Dal ${priceInfo.from} al ${priceInfo.to} ${priceInfo.month} per ${priceInfo.guests} persone il totale è circa ${priceInfo.total}€. Vuoi che controlli la disponibilità?`;
-    } else {
-      const context = {
-        message: text,
-        month: finalMonth,
-        dates: finalDates,
-        guests: finalGuests
-      };
-
-      reply = await generateReply(context);
-    }
-
-    // =======================
-    // LEAD
-    // =======================
-
-    if (
-      finalMonth &&
-      finalDates &&
-      finalGuests &&
-      text.toLowerCase().includes("ok")
-    ) {
-      await supabase.from("leads").insert([
-        {
-          phone: from,
-          month: finalMonth,
-          dates: JSON.stringify(finalDates),
-          guests: finalGuests,
-          status: "new",
-          created_at: new Date().toISOString()
-        }
-      ]);
-
-      reply = "Perfetto 🙌 Ti blocco la disponibilità. Come ti chiami?";
-    }
-
-    // SAVE AI
     await supabase.from("conversations").insert([
       {
         phone: from,
@@ -227,7 +139,10 @@ app.post("/webhook", async (req, res) => {
       }
     ]);
 
-    // SEND
+    // =======================
+    // SEND WHATSAPP
+    // =======================
+
     await axios.post(
       `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
@@ -246,11 +161,11 @@ app.post("/webhook", async (req, res) => {
     res.sendStatus(200);
 
   } catch (err) {
-    console.log("ERROR:", err.message);
+    console.log("🔥 ERROR:", err.message);
     res.sendStatus(500);
   }
 });
 
 app.listen(process.env.PORT || 3001, () => {
-  console.log("Server running");
+  console.log("✅ Server running");
 });
