@@ -1,8 +1,8 @@
-import express from "express";
-import bodyParser from "body-parser";
-import axios from "axios";
-import { createClient } from "@supabase/supabase-js";
-import OpenAI from "openai";
+const express = require("express");
+const bodyParser = require("body-parser");
+const axios = require("axios");
+const { createClient } = require("@supabase/supabase-js");
+const OpenAI = require("openai");
 
 const app = express();
 app.use(bodyParser.json());
@@ -13,8 +13,6 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const takeover = new Set();
 
-// ======================
-// SEND WHATSAPP
 // ======================
 async function send(to, text) {
   await axios.post(
@@ -35,16 +33,12 @@ async function send(to, text) {
 }
 
 // ======================
-// SAVE MESSAGE
-// ======================
 async function saveMessage(phone, role, message, property_id) {
   await supabase.from("messages").insert([
     { phone, role, message, property_id }
   ]);
 }
 
-// ======================
-// GET HISTORY
 // ======================
 async function getHistory(phone) {
   const { data } = await supabase
@@ -58,8 +52,6 @@ async function getHistory(phone) {
 }
 
 // ======================
-// GET PROPERTY
-// ======================
 async function getProperty(property_id) {
   const { data } = await supabase
     .from("property_info")
@@ -70,8 +62,6 @@ async function getProperty(property_id) {
   return data;
 }
 
-// ======================
-// AI RESPONSE
 // ======================
 async function askAI(text, property, history) {
   try {
@@ -88,7 +78,7 @@ ${context}
 
 USER: ${text}
 
-Answer clearly and helpfully.
+Answer clearly.
 `;
 
     const res = await openai.chat.completions.create({
@@ -103,8 +93,6 @@ Answer clearly and helpfully.
 }
 
 // ======================
-// WEBHOOK
-// ======================
 app.post("/webhook", async (req, res) => {
   try {
     const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
@@ -112,17 +100,14 @@ app.post("/webhook", async (req, res) => {
 
     const from = msg.from;
     const text = msg.text?.body;
-
     if (!text) return res.sendStatus(200);
 
-    // property id fisso per ora
     const property_id = "80ffd815-7985-47a1-84d6-c9463bf13590";
 
     await saveMessage(from, "guest", text, property_id);
 
-    // takeover attivo
     if (takeover.has(from)) {
-      await send(from, "👤 L'host ti risponderà a breve.");
+      await send(from, "👤 Host will reply shortly.");
       return res.sendStatus(200);
     }
 
@@ -131,9 +116,7 @@ app.post("/webhook", async (req, res) => {
 
     let reply = await askAI(text, property, history);
 
-    if (!reply) {
-      reply = "Sorry, I couldn't find the information.";
-    }
+    if (!reply) reply = "I couldn't find that information.";
 
     await saveMessage(from, "assistant", reply, property_id);
     await send(from, reply);
@@ -146,8 +129,6 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ======================
-// HOST SEND MESSAGE
-// ======================
 app.post("/host-send", async (req, res) => {
   const { phone, message } = req.body;
 
@@ -158,8 +139,6 @@ app.post("/host-send", async (req, res) => {
 });
 
 // ======================
-// TAKEOVER
-// ======================
 app.post("/takeover", (req, res) => {
   const { phone, active } = req.body;
 
@@ -169,8 +148,6 @@ app.post("/takeover", (req, res) => {
   res.sendStatus(200);
 });
 
-// ======================
-// GET CONVERSATIONS
 // ======================
 app.get("/conversations", async (req, res) => {
   const { data } = await supabase
