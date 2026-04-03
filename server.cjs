@@ -27,15 +27,7 @@ const rules = [
     response: "📶 Network: ARRIS-6F59\n🔑 Password: Malta2025",
   },
   {
-    keywords: ["check-in", "check in"],
-    response: "🕒 Check-in is from 15:00 (3 PM).",
-  },
-  {
-    keywords: ["check-out", "checkout"],
-    response: "🕚 Check-out is before 11:00.",
-  },
-  {
-    keywords: ["parking", "parcheggio"],
+    keywords: ["parking"],
     response: "🚗 Free street parking nearby. No private parking.",
   },
 ];
@@ -70,32 +62,59 @@ app.post("/webhook", async (req, res) => {
 
     if (!text) return res.sendStatus(200);
 
-    // =========================
-    // 🔒 CHECK DUPLICATI DB
-    // =========================
+    // 🔒 DUPLICATE CHECK
     const { data: existing } = await supabase
       .from("messages")
       .select("id")
       .eq("message_id", messageId)
       .maybeSingle();
 
-    if (existing) {
-      console.log("⛔ DUPLICATE BLOCKED");
-      return res.sendStatus(200);
-    }
+    if (existing) return res.sendStatus(200);
 
-    // 💾 salva user message con message_id
+    // 💾 salva messaggio
     await supabase.from("messages").insert([
       {
         phone: from,
         role: "user",
         message: text,
-        message_id: messageId, // 🔥 CRUCIALE
+        message_id: messageId,
       },
     ]);
 
     // =========================
-    // ⚡ RULE FIRST
+    // 🏠 BOOKING CONTEXT (FIXED)
+    // =========================
+    const { data: booking } = await supabase
+      .from("bookings")
+      .select("*")
+      .eq("guest_phone", from) // 👈 FIX
+      .limit(1)
+      .maybeSingle();
+
+    let bookingContext = "";
+
+    if (booking) {
+      const today = new Date();
+      const checkIn = new Date(booking.checkin);
+      const checkOut = new Date(booking.checkout);
+
+      let status = "unknown";
+
+      if (today < checkIn) status = "before check-in";
+      else if (today >= checkIn && today <= checkOut) status = "during stay";
+      else status = "after check-out";
+
+      bookingContext = `
+Guest booking:
+Property: ${booking.property_id}
+Check-in: ${booking.checkin}
+Check-out: ${booking.checkout}
+Status: ${status}
+`;
+    }
+
+    // =========================
+    // ⚡ RULES
     // =========================
     const ruleResponse = matchRule(text);
 
@@ -144,7 +163,13 @@ app.post("/webhook", async (req, res) => {
       messages: [
         {
           role: "system",
-          content: "You are a helpful Airbnb co-host.",
+          content: `
+You are an Airbnb co-host.
+
+${bookingContext}
+
+Be helpful, friendly and concise.
+`,
         },
         ...messages,
       ],
