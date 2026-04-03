@@ -4,8 +4,14 @@ const { createClient } = require("@supabase/supabase-js");
 const OpenAI = require("openai");
 
 const app = express();
-app.use(bodyParser.urlencoded({ extended: false }));
 
+// ⚠️ fondamentale per Twilio
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
+
+// =========================
+// CONFIG
+// =========================
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
@@ -16,23 +22,46 @@ const openai = new OpenAI({
 });
 
 // =========================
+// HEALTH CHECK
+// =========================
+app.get("/", (req, res) => {
+  res.send("AI Co-Host running");
+});
+
+// =========================
 // WEBHOOK WHATSAPP
 // =========================
 app.post("/webhook", async (req, res) => {
   try {
-    const from = req.body.From.replace("whatsapp:", "");
-    const text = req.body.Body;
+    console.log("RAW BODY:", req.body);
+
+    const fromRaw = req.body.From || "";
+    const text = req.body.Body || "";
+
+    // 👉 evita crash Twilio
+    if (!fromRaw || !text) {
+      console.log("Invalid webhook call");
+
+      res.set("Content-Type", "text/xml");
+      return res.send("<Response></Response>");
+    }
+
+    const from = fromRaw.replace("whatsapp:", "");
 
     console.log("Incoming:", from, text);
 
-    // salva messaggio guest
+    // =========================
+    // SALVA MESSAGGIO GUEST
+    // =========================
     await supabase.from("messages").insert({
       phone: from,
       role: "guest",
       message: text,
     });
 
-    // recupera storico
+    // =========================
+    // STORICO CHAT
+    // =========================
     const { data: history } = await supabase
       .from("messages")
       .select("*")
@@ -44,22 +73,32 @@ app.post("/webhook", async (req, res) => {
       content: m.message,
     }));
 
-    // AI risposta
+    // =========================
+    // AI RESPONSE
+    // =========================
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
       messages,
     });
 
-    const reply = completion.choices[0].message.content;
+    const reply =
+      completion.choices?.[0]?.message?.content ||
+      "Sorry, I couldn't reply.";
 
-    // salva risposta
+    console.log("AI reply:", reply);
+
+    // =========================
+    // SALVA RISPOSTA
+    // =========================
     await supabase.from("messages").insert({
       phone: from,
       role: "assistant",
       message: reply,
     });
 
-    // ⚠️ RISPOSTA CORRETTA PER TWILIO (FONDAMENTALE)
+    // =========================
+    // RISPOSTA TWILIO (CRITICO)
+    // =========================
     res.set("Content-Type", "text/xml");
     res.send(`
       <Response>
@@ -68,19 +107,19 @@ app.post("/webhook", async (req, res) => {
     `);
 
   } catch (err) {
-    console.error(err);
+    console.error("SERVER ERROR:", err);
 
     res.set("Content-Type", "text/xml");
     res.send(`
       <Response>
-        <Message>Errore temporaneo, riprova.</Message>
+        <Message>Temporary error, please try again.</Message>
       </Response>
     `);
   }
 });
 
 // =========================
-// SERVER
+// START SERVER
 // =========================
 app.listen(process.env.PORT || 3000, () => {
   console.log("🚀 Server running");
