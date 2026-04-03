@@ -28,6 +28,19 @@ app.get("/webhook", (req, res) => {
   }
 });
 
+// ===== SUPABASE HELPERS =====
+async function supabaseFetch(path, options = {}) {
+  return fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    ...options,
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+}
+
 // ===== SEND MESSAGE =====
 async function sendMessage(to, text) {
   await fetch(
@@ -40,7 +53,7 @@ async function sendMessage(to, text) {
       },
       body: JSON.stringify({
         messaging_product: "whatsapp",
-        to: to,
+        to,
         text: { body: text },
       }),
     }
@@ -48,56 +61,69 @@ async function sendMessage(to, text) {
 }
 
 // ===== GET BOOKING =====
-async function getBookingByPhone(phone) {
+async function getBooking(phone) {
   const cleanPhone = normalizePhone(phone);
 
-  const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/bookings?guest_phone=eq.${cleanPhone}`,
-    {
-      headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-      },
-    }
+  const res = await supabaseFetch(
+    `bookings?guest_phone=eq.${cleanPhone}`
   );
 
   const data = await res.json();
   return data[0];
 }
 
+// ===== CHECK EXISTING CLEANING =====
+async function cleaningExists(booking_id) {
+  const res = await supabaseFetch(
+    `cleaning_tasks?booking_id=eq.${booking_id}`
+  );
+
+  const data = await res.json();
+  return data.length > 0;
+}
+
 // ===== CREATE CLEANING TASK =====
 async function createCleaningTask(booking) {
-  if (!booking) return;
+  const exists = await cleaningExists(booking.id);
 
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/cleaning_tasks`, {
+  if (exists) {
+    console.log("⚠️ Cleaning already exists");
+    return;
+  }
+
+  const payload = {
+    property_id: booking.property_id,
+    booking_id: booking.id,
+    cleaning_date: booking.checkout,
+    status: "pending",
+  };
+
+  const res = await supabaseFetch("cleaning_tasks", {
     method: "POST",
     headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      "Content-Type": "application/json",
       Prefer: "return=representation",
     },
-    body: JSON.stringify({
-      property_id: booking.property_id,
-      booking_id: booking.id,
-      cleaning_date: booking.checkout,
-      status: "pending",
-    }),
+    body: JSON.stringify(payload),
   });
 
-  const data = await res.text();
-  console.log("Cleaning created:", data);
+  const data = await res.json();
+  console.log("✅ Cleaning created:", data);
+}
+
+// ===== UPDATE CLEANING TASK =====
+async function updateCleaningTask(id, updates) {
+  const res = await supabaseFetch(`cleaning_tasks?id=eq.${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(updates),
+  });
+
+  return res;
 }
 
 // ===== SAVE MESSAGE =====
 async function saveMessage(phone, message, role) {
-  await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
+  await supabaseFetch("messages", {
     method: "POST",
-    headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      "Content-Type": "application/json",
-    },
     body: JSON.stringify({
       phone: normalizePhone(phone),
       message,
@@ -106,7 +132,7 @@ async function saveMessage(phone, message, role) {
   });
 }
 
-// ===== AI =====
+// ===== AI LOGIC =====
 function getReply(text) {
   const msg = text.toLowerCase();
 
@@ -132,25 +158,22 @@ function getReply(text) {
 // ===== WEBHOOK =====
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const message = changes?.value?.messages?.[0];
+    const message =
+      req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
     if (!message) return res.sendStatus(200);
 
     const from = message.from;
     const text = message.text?.body;
 
-    console.log("Incoming:", from, text);
+    console.log("📩", from, text);
 
     await saveMessage(from, text, "guest");
 
-    const booking = await getBookingByPhone(from);
+    const booking = await getBooking(from);
 
     if (booking) {
       await createCleaningTask(booking);
-    } else {
-      console.log("Booking NOT found");
     }
 
     const reply = getReply(text);
@@ -160,12 +183,12 @@ app.post("/webhook", async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    console.error("ERROR:", err);
+    console.error("🔥 ERROR:", err);
     res.sendStatus(500);
   }
 });
 
 // ===== START =====
 app.listen(10000, () => {
-  console.log("Server running on port 10000");
+  console.log("🚀 Server running");
 });
