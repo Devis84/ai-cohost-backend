@@ -15,7 +15,17 @@ function normalizePhone(phone) {
   return phone.replace("+", "").trim();
 }
 
-// ===== SUPABASE WRAPPER =====
+function calculateTotal(start, end, rate) {
+  if (!start || !end || !rate) return null;
+
+  const startDate = new Date(`1970-01-01T${start}`);
+  const endDate = new Date(`1970-01-01T${end}`);
+
+  const hours = (endDate - startDate) / (1000 * 60 * 60);
+  return Number((hours * rate).toFixed(2));
+}
+
+// ===== SUPABASE =====
 async function supabaseFetch(path, options = {}) {
   return fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
@@ -28,20 +38,19 @@ async function supabaseFetch(path, options = {}) {
   });
 }
 
-// ===== WEBHOOK VERIFY =====
+// =========================
+// 🔐 WEBHOOK VERIFY
+// =========================
 app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode && token === VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
-  } else {
-    return res.sendStatus(403);
+  if (req.query["hub.verify_token"] === VERIFY_TOKEN) {
+    return res.send(req.query["hub.challenge"]);
   }
+  res.sendStatus(403);
 });
 
-// ===== SEND MESSAGE =====
+// =========================
+// 📤 SEND MESSAGE
+// =========================
 async function sendMessage(to, text) {
   await fetch(
     `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -60,54 +69,9 @@ async function sendMessage(to, text) {
   );
 }
 
-// ===== GET BOOKING =====
-async function getBooking(phone) {
-  const cleanPhone = normalizePhone(phone);
-
-  const res = await supabaseFetch(
-    `bookings?guest_phone=eq.${cleanPhone}`
-  );
-
-  const data = await res.json();
-  return data[0];
-}
-
-// ===== CHECK CLEANING =====
-async function cleaningExists(booking_id) {
-  const res = await supabaseFetch(
-    `cleaning_tasks?booking_id=eq.${booking_id}`
-  );
-
-  const data = await res.json();
-  return data.length > 0;
-}
-
-// ===== CREATE CLEANING =====
-async function createCleaningTask(booking) {
-  const exists = await cleaningExists(booking.id);
-
-  if (exists) return;
-
-  const payload = {
-    property_id: booking.property_id,
-    booking_id: booking.id,
-    cleaning_date: booking.checkout,
-    status: "pending",
-  };
-
-  const res = await supabaseFetch("cleaning_tasks", {
-    method: "POST",
-    headers: {
-      Prefer: "return=representation",
-    },
-    body: JSON.stringify(payload),
-  });
-
-  const data = await res.json();
-  console.log("🧹 Created cleaning:", data);
-}
-
-// ===== SAVE MESSAGE =====
+// =========================
+// 📩 SAVE MESSAGE
+// =========================
 async function saveMessage(phone, message, role) {
   await supabaseFetch("messages", {
     method: "POST",
@@ -119,7 +83,125 @@ async function saveMessage(phone, message, role) {
   });
 }
 
-// ===== AI =====
+// =========================
+// 🏠 BOOKING
+// =========================
+async function getBooking(phone) {
+  const cleanPhone = normalizePhone(phone);
+
+  const res = await supabaseFetch(
+    `bookings?guest_phone=eq.${cleanPhone}`
+  );
+
+  const data = await res.json();
+  return data[0];
+}
+
+// =========================
+// 🧼 CLEANING CORE
+// =========================
+async function cleaningExists(booking_id) {
+  const res = await supabaseFetch(
+    `cleaning_tasks?booking_id=eq.${booking_id}`
+  );
+
+  const data = await res.json();
+  return data.length > 0;
+}
+
+async function createCleaningTask(booking) {
+  const exists = await cleaningExists(booking.id);
+  if (exists) return;
+
+  const payload = {
+    property_id: booking.property_id,
+    booking_id: booking.id,
+    cleaning_date: booking.checkout,
+    status: "pending",
+  };
+
+  const res = await supabaseFetch("cleaning_tasks", {
+    method: "POST",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json();
+  console.log("🧹 Created cleaning:", data);
+}
+
+// =========================
+// 📊 DASHBOARD API
+// =========================
+
+// 👉 GET ALL TASKS
+app.get("/cleaning", async (req, res) => {
+  const result = await supabaseFetch(
+    "cleaning_tasks?order=cleaning_date.asc"
+  );
+  const data = await result.json();
+  res.json(data);
+});
+
+// 👉 GET BY DATE RANGE (CALENDAR)
+app.get("/cleaning/calendar", async (req, res) => {
+  const { start, end } = req.query;
+
+  const result = await supabaseFetch(
+    `cleaning_tasks?cleaning_date=gte.${start}&cleaning_date=lte.${end}&order=cleaning_date.asc`
+  );
+
+  const data = await result.json();
+  res.json(data);
+});
+
+// 👉 UPDATE TASK (CLEANER SYSTEM)
+app.post("/cleaning/update", async (req, res) => {
+  try {
+    const {
+      id,
+      cleaner,
+      start_time,
+      end_time,
+      hourly_rate,
+      notes,
+      status,
+    } = req.body;
+
+    const total_amount = calculateTotal(
+      start_time,
+      end_time,
+      hourly_rate
+    );
+
+    const updates = {
+      cleaner,
+      start_time,
+      end_time,
+      hourly_rate,
+      total_amount,
+      notes,
+      status,
+    };
+
+    await supabaseFetch(`cleaning_tasks?id=eq.${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(updates),
+    });
+
+    res.json({
+      success: true,
+      total_amount,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "update failed" });
+  }
+});
+
+// =========================
+// 🤖 AI
+// =========================
 function getReply(text) {
   const msg = text.toLowerCase();
 
@@ -142,7 +224,9 @@ function getReply(text) {
   return "Sorry, I didn't understand.";
 }
 
-// ===== WEBHOOK =====
+// =========================
+// 📩 WEBHOOK
+// =========================
 app.post("/webhook", async (req, res) => {
   try {
     const message =
@@ -153,15 +237,10 @@ app.post("/webhook", async (req, res) => {
     const from = message.from;
     const text = message.text?.body;
 
-    console.log("📩 Incoming:", from, text);
-
     await saveMessage(from, text, "guest");
 
     const booking = await getBooking(from);
-
-    if (booking) {
-      await createCleaningTask(booking);
-    }
+    if (booking) await createCleaningTask(booking);
 
     const reply = getReply(text);
 
@@ -170,23 +249,23 @@ app.post("/webhook", async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    console.error("🔥 ERROR:", err);
+    console.error(err);
     res.sendStatus(500);
   }
 });
 
-// ===== CLEANING SCHEDULER =====
+// =========================
+// ⏱ SCHEDULER
+// =========================
 async function runCleaningScheduler() {
-  console.log("⏱ Running cleaning sync...");
+  console.log("⏱ Sync cleaning...");
 
   const res = await supabaseFetch("bookings");
   const bookings = await res.json();
 
   for (const booking of bookings) {
     const exists = await cleaningExists(booking.id);
-
     if (!exists) {
-      console.log("🧹 Auto-create cleaning for:", booking.id);
       await createCleaningTask(booking);
     }
   }
@@ -195,7 +274,9 @@ async function runCleaningScheduler() {
 // ogni 5 minuti
 setInterval(runCleaningScheduler, 5 * 60 * 1000);
 
-// ===== START =====
+// =========================
+// 🚀 START
+// =========================
 app.listen(10000, () => {
-  console.log("🚀 Server running");
+  console.log("🚀 Server running (PRO version)");
 });
