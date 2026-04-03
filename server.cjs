@@ -9,55 +9,42 @@ app.use(bodyParser.json());
 const VERIFY_TOKEN = "my_verify_token";
 const ACCESS_TOKEN = process.env.META_TOKEN;
 
-// 🔌 SUPABASE
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
 
-// 🤖 OPENAI
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// 🧠 anti-duplicati
-const processedMessages = new Set();
-
 // =========================
-// 🧠 RULES ENGINE (SCALABILE)
+// 🧠 RULES ENGINE
 // =========================
 const rules = [
   {
-    keywords: ["wifi", "internet"],
-    response:
-      "📶 Network: ARRIS-6F59\n🔑 Password: Malta2025",
+    keywords: ["wifi"],
+    response: "📶 Network: ARRIS-6F59\n🔑 Password: Malta2025",
   },
   {
     keywords: ["check-in", "check in"],
-    response:
-      "🕒 Check-in is from 15:00 (3 PM). Let me know if you need flexibility.",
+    response: "🕒 Check-in is from 15:00 (3 PM).",
   },
   {
-    keywords: ["check-out", "checkout", "check out"],
-    response:
-      "🕚 Check-out is before 11:00 AM.",
+    keywords: ["check-out", "checkout"],
+    response: "🕚 Check-out is before 11:00.",
   },
   {
     keywords: ["parking", "parcheggio"],
-    response:
-      "🚗 Free street parking is available nearby. No private parking.",
+    response: "🚗 Free street parking nearby. No private parking.",
   },
 ];
 
-// 🔍 RULE MATCHER
 function matchRule(text) {
   const lower = text.toLowerCase();
-
   for (let rule of rules) {
     for (let keyword of rule.keywords) {
-      if (lower.includes(keyword)) {
-        return rule.response;
-      }
+      if (lower.includes(keyword)) return rule.response;
     }
   }
   return null;
@@ -65,15 +52,10 @@ function matchRule(text) {
 
 // 🔐 VERIFY
 app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode && token === VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
-  } else {
-    return res.sendStatus(403);
+  if (req.query["hub.verify_token"] === VERIFY_TOKEN) {
+    return res.send(req.query["hub.challenge"]);
   }
+  res.sendStatus(403);
 });
 
 // 📩 INCOMING
@@ -83,33 +65,41 @@ app.post("/webhook", async (req, res) => {
     if (!message) return res.sendStatus(200);
 
     const messageId = message.id;
-
-    if (processedMessages.has(messageId)) {
-      return res.sendStatus(200);
-    }
-    processedMessages.add(messageId);
-
     const from = message.from;
     const text = message.text?.body;
 
     if (!text) return res.sendStatus(200);
 
-    // 💾 salva user message
+    // =========================
+    // 🔒 CHECK DUPLICATI DB
+    // =========================
+    const { data: existing } = await supabase
+      .from("messages")
+      .select("id")
+      .eq("message_id", messageId)
+      .maybeSingle();
+
+    if (existing) {
+      console.log("⛔ DUPLICATE BLOCKED");
+      return res.sendStatus(200);
+    }
+
+    // 💾 salva user message con message_id
     await supabase.from("messages").insert([
       {
         phone: from,
         role: "user",
         message: text,
+        message_id: messageId, // 🔥 CRUCIALE
       },
     ]);
 
     // =========================
-    // ⚡ RULE ENGINE FIRST
+    // ⚡ RULE FIRST
     // =========================
     const ruleResponse = matchRule(text);
 
     if (ruleResponse) {
-      // 💾 salva risposta
       await supabase.from("messages").insert([
         {
           phone: from,
@@ -118,7 +108,6 @@ app.post("/webhook", async (req, res) => {
         },
       ]);
 
-      // 📤 invia
       await fetch(`https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`, {
         method: "POST",
         headers: {
@@ -132,13 +121,12 @@ app.post("/webhook", async (req, res) => {
         }),
       });
 
-      return res.sendStatus(200); // 🔥 STOP QUI (NO AI)
+      return res.sendStatus(200);
     }
 
     // =========================
-    // 🤖 AI FALLBACK
+    // 🤖 AI
     // =========================
-
     const { data: history } = await supabase
       .from("messages")
       .select("*")
@@ -146,20 +134,17 @@ app.post("/webhook", async (req, res) => {
       .order("created_at", { ascending: false })
       .limit(10);
 
-    const messages = history
-      .reverse()
-      .map((m) => ({
-        role: m.role === "assistant" ? "assistant" : "user",
-        content: m.message,
-      }));
+    const messages = history.reverse().map((m) => ({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: m.message,
+    }));
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content:
-            "You are an Airbnb co-host. Be helpful, concise, and natural.",
+          content: "You are a helpful Airbnb co-host.",
         },
         ...messages,
       ],
@@ -167,7 +152,6 @@ app.post("/webhook", async (req, res) => {
 
     const reply = completion.choices[0].message.content;
 
-    // 💾 salva AI risposta
     await supabase.from("messages").insert([
       {
         phone: from,
@@ -176,7 +160,6 @@ app.post("/webhook", async (req, res) => {
       },
     ]);
 
-    // 📤 invia
     await fetch(`https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`, {
       method: "POST",
       headers: {
@@ -191,7 +174,7 @@ app.post("/webhook", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("ERROR:", err);
+    console.error(err);
   }
 
   res.sendStatus(200);
