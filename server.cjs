@@ -1,5 +1,7 @@
 const express = require("express");
 const bodyParser = require("body-parser");
+const { createClient } = require("@supabase/supabase-js");
+const OpenAI = require("openai");
 
 const app = express();
 app.use(bodyParser.json());
@@ -7,53 +9,100 @@ app.use(bodyParser.json());
 const VERIFY_TOKEN = "my_verify_token";
 const ACCESS_TOKEN = process.env.META_TOKEN;
 
-// 🧠 memoria semplice anti-duplicati
+// 🔌 SUPABASE
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
+
+// 🤖 OPENAI
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// 🧠 anti-duplicati
 const processedMessages = new Set();
 
-// 🔐 WEBHOOK VERIFY
+// 🔐 VERIFY
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
   if (mode && token === VERIFY_TOKEN) {
-    console.log("WEBHOOK VERIFIED");
     return res.status(200).send(challenge);
   } else {
     return res.sendStatus(403);
   }
 });
 
-// 📩 INCOMING MESSAGE
+// 📩 INCOMING
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const message = changes?.value?.messages?.[0];
-
+    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (!message) return res.sendStatus(200);
 
     const messageId = message.id;
 
-    // 🔥 BLOCCA DUPLICATI
     if (processedMessages.has(messageId)) {
-      console.log("Duplicate message ignored:", messageId);
       return res.sendStatus(200);
     }
-
     processedMessages.add(messageId);
 
     const from = message.from;
-    const text = message.text?.body?.toLowerCase();
+    const text = message.text?.body;
 
     if (!text) return res.sendStatus(200);
 
-    let reply = "Sorry, I didn't understand.";
+    // 💾 salva messaggio utente
+    await supabase.from("messages").insert([
+      {
+        phone: from,
+        role: "user",
+        message: text,
+      },
+    ]);
 
-    if (text.includes("wifi")) {
-      reply = "📶 Network: ARRIS-6F59 | Password: Malta2025";
-    }
+    // 📚 recupera ultimi messaggi
+    const { data: history } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("phone", from)
+      .order("created_at", { ascending: false })
+      .limit(10);
 
+    const messages = history
+      .reverse()
+      .map((m) => ({
+        role: m.role === "assistant" ? "assistant" : "user",
+        content: m.message, // 👈 QUI conversione corretta
+      }));
+
+    // 🤖 AI RESPONSE
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an Airbnb co-host. Be helpful, concise, friendly. Answer like a real host.",
+        },
+        ...messages,
+      ],
+    });
+
+    const reply = completion.choices[0].message.content;
+
+    // 💾 salva risposta
+    await supabase.from("messages").insert([
+      {
+        phone: from,
+        role: "assistant",
+        message: reply,
+      },
+    ]);
+
+    // 📤 invia WhatsApp
     await fetch(`https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`, {
       method: "POST",
       headers: {
