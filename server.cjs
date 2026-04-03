@@ -15,6 +15,19 @@ function normalizePhone(phone) {
   return phone.replace("+", "").trim();
 }
 
+// ===== SUPABASE WRAPPER =====
+async function supabaseFetch(path, options = {}) {
+  return fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    ...options,
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+}
+
 // ===== WEBHOOK VERIFY =====
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -27,19 +40,6 @@ app.get("/webhook", (req, res) => {
     return res.sendStatus(403);
   }
 });
-
-// ===== SUPABASE HELPERS =====
-async function supabaseFetch(path, options = {}) {
-  return fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-    ...options,
-    headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
-}
 
 // ===== SEND MESSAGE =====
 async function sendMessage(to, text) {
@@ -72,7 +72,7 @@ async function getBooking(phone) {
   return data[0];
 }
 
-// ===== CHECK EXISTING CLEANING =====
+// ===== CHECK CLEANING =====
 async function cleaningExists(booking_id) {
   const res = await supabaseFetch(
     `cleaning_tasks?booking_id=eq.${booking_id}`
@@ -82,14 +82,11 @@ async function cleaningExists(booking_id) {
   return data.length > 0;
 }
 
-// ===== CREATE CLEANING TASK =====
+// ===== CREATE CLEANING =====
 async function createCleaningTask(booking) {
   const exists = await cleaningExists(booking.id);
 
-  if (exists) {
-    console.log("⚠️ Cleaning already exists");
-    return;
-  }
+  if (exists) return;
 
   const payload = {
     property_id: booking.property_id,
@@ -107,17 +104,7 @@ async function createCleaningTask(booking) {
   });
 
   const data = await res.json();
-  console.log("✅ Cleaning created:", data);
-}
-
-// ===== UPDATE CLEANING TASK =====
-async function updateCleaningTask(id, updates) {
-  const res = await supabaseFetch(`cleaning_tasks?id=eq.${id}`, {
-    method: "PATCH",
-    body: JSON.stringify(updates),
-  });
-
-  return res;
+  console.log("🧹 Created cleaning:", data);
 }
 
 // ===== SAVE MESSAGE =====
@@ -132,7 +119,7 @@ async function saveMessage(phone, message, role) {
   });
 }
 
-// ===== AI LOGIC =====
+// ===== AI =====
 function getReply(text) {
   const msg = text.toLowerCase();
 
@@ -166,7 +153,7 @@ app.post("/webhook", async (req, res) => {
     const from = message.from;
     const text = message.text?.body;
 
-    console.log("📩", from, text);
+    console.log("📩 Incoming:", from, text);
 
     await saveMessage(from, text, "guest");
 
@@ -187,6 +174,26 @@ app.post("/webhook", async (req, res) => {
     res.sendStatus(500);
   }
 });
+
+// ===== CLEANING SCHEDULER =====
+async function runCleaningScheduler() {
+  console.log("⏱ Running cleaning sync...");
+
+  const res = await supabaseFetch("bookings");
+  const bookings = await res.json();
+
+  for (const booking of bookings) {
+    const exists = await cleaningExists(booking.id);
+
+    if (!exists) {
+      console.log("🧹 Auto-create cleaning for:", booking.id);
+      await createCleaningTask(booking);
+    }
+  }
+}
+
+// ogni 5 minuti
+setInterval(runCleaningScheduler, 5 * 60 * 1000);
 
 // ===== START =====
 app.listen(10000, () => {
