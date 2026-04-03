@@ -3,188 +3,57 @@
 <head>
   <title>AI Co-Host Dashboard</title>
   <meta charset="UTF-8">
-
-  <style>
-    body {
-      font-family: Arial;
-      padding: 20px;
-      background: #f5f5f5;
-    }
-
-    h2 {
-      margin-bottom: 10px;
-    }
-
-    .chat {
-      background: white;
-      padding: 15px;
-      margin-bottom: 20px;
-      border-radius: 10px;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-    }
-
-    .phone {
-      display: flex;
-      justify-content: space-between;
-      font-weight: bold;
-      margin-bottom: 10px;
-    }
-
-    .status {
-      font-size: 12px;
-      padding: 3px 6px;
-      border-radius: 5px;
-      color: white;
-    }
-
-    .active { background: red; }
-    .inactive { background: green; }
-
-    .messages {
-      display: flex;
-      flex-direction: column;
-    }
-
-    .msg {
-      padding: 10px;
-      margin: 5px 0;
-      border-radius: 10px;
-      max-width: 70%;
-      animation: fadeIn 0.2s ease;
-    }
-
-    .guest {
-      background: #e3f2fd;
-      align-self: flex-start;
-    }
-
-    .assistant {
-      background: #e8f5e9;
-      align-self: flex-end;
-    }
-
-    .host {
-      background: #fff3e0;
-      align-self: flex-end;
-      border: 2px solid orange;
-    }
-
-    input {
-      margin: 5px;
-      padding: 8px;
-      width: 200px;
-    }
-
-    button {
-      margin: 5px;
-      padding: 8px 12px;
-      cursor: pointer;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(5px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-  </style>
 </head>
 
 <body>
 
 <h2>📊 Conversations</h2>
-<button onclick="load()">🔄 Refresh</button>
+<button onclick="loadMessages()">Refresh</button>
+<div id="messages"></div>
 
-<div id="data"></div>
+<h2>🧼 Cleaning Tasks</h2>
+<button onclick="loadCleaning()">Refresh</button>
+<div id="cleaning"></div>
 
-<h2>🧑‍💼 Host Control</h2>
+<h2>➕ Create Booking</h2>
 
-<input id="phone" placeholder="Phone">
-<input id="message" placeholder="Message">
+<input id="phone" placeholder="Phone"><br>
+<input id="checkin" placeholder="Check-in (YYYY-MM-DD)"><br>
+<input id="checkout" placeholder="Check-out (YYYY-MM-DD)"><br>
 
-<button onclick="sendHost()">Send</button>
-<button onclick="takeover(true)">Takeover ON</button>
-<button onclick="takeover(false)">Takeover OFF</button>
+<button onclick="createBooking()">Create Booking</button>
 
 <script>
-let lastRender = "";
-let lastMessageCount = 0;
-
-async function load() {
+async function loadMessages() {
   const res = await fetch("/conversations");
   const data = await res.json();
 
-  if (data.length > lastMessageCount) {
-    notify("New message from guest");
-  }
-  lastMessageCount = data.length;
-
-  const grouped = {};
-
-  data.forEach(m => {
-    if (!grouped[m.phone]) grouped[m.phone] = [];
-    grouped[m.phone].push(m);
-  });
-
-  const html = Object.keys(grouped).map(phone => {
-    const messages = grouped[phone]
-      .map(m => `
-        <div class="msg ${m.role}">
-          <b>${m.role}</b><br/>
-          ${m.message}
-        </div>
-      `).join("");
-
-    return `
-      <div class="chat">
-        <div class="phone">
-          📱 ${phone}
-          <span class="status inactive">AI Active</span>
-        </div>
-        <div class="messages">${messages}</div>
-      </div>
-    `;
-  }).join("");
-
-  if (html !== lastRender) {
-    document.getElementById("data").innerHTML = html;
-    lastRender = html;
-    window.scrollTo(0, document.body.scrollHeight);
-  }
+  document.getElementById("messages").innerHTML =
+    data.map(m => `<p><b>${m.phone}</b>: ${m.message}</p>`).join("");
 }
 
-async function sendHost() {
-  await fetch("/host-message", {
+async function loadCleaning() {
+  const res = await fetch("/cleaning-tasks");
+  const data = await res.json();
+
+  document.getElementById("cleaning").innerHTML =
+    data.map(c => `<p>🧼 ${c.cleaning_date} - ${c.status}</p>`).join("");
+}
+
+async function createBooking() {
+  await fetch("/create-booking", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       phone: document.getElementById("phone").value,
-      message: document.getElementById("message").value
+      checkin: document.getElementById("checkin").value,
+      checkout: document.getElementById("checkout").value
     })
   });
 }
 
-async function takeover(active) {
-  await fetch("/takeover", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      phone: document.getElementById("phone").value,
-      active
-    })
-  });
-}
-
-function notify(text) {
-  if (Notification.permission === "granted") {
-    new Notification(text);
-  }
-}
-
-if (Notification.permission !== "granted") {
-  Notification.requestPermission();
-}
-
-setInterval(load, 3000);
-load();
+loadMessages();
+loadCleaning();
 </script>
 
 </body>
