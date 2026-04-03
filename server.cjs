@@ -1,124 +1,78 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const { createClient } = require("@supabase/supabase-js");
-const OpenAI = require("openai");
+import express from "express";
+import bodyParser from "body-parser";
+import fetch from "node-fetch";
 
 const app = express();
-
-// supporta entrambi i formati
-app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-// =========================
-// CONFIG
-// =========================
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
+const VERIFY_TOKEN = "my_verify_token_123";
+const ACCESS_TOKEN = process.env.META_TOKEN;
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+// ✅ QUESTA È LA PARTE CHE TI MANCAVA
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("WEBHOOK VERIFIED");
+    return res.status(200).send(challenge);
+  }
+
+  res.sendStatus(403);
 });
 
-// =========================
-// HEALTH CHECK
-// =========================
-app.get("/", (req, res) => {
-  res.send("AI Co-Host running");
-});
-
-// =========================
-// WEBHOOK
-// =========================
+// ✅ RICEZIONE MESSAGGI
 app.post("/webhook", async (req, res) => {
   try {
-    console.log("RAW BODY:", req.body);
+    console.log("RAW BODY:", JSON.stringify(req.body, null, 2));
 
-    // =========================
-    // 🚫 IGNORA META WEBHOOK
-    // =========================
-    if (req.body.object === "whatsapp_business_account") {
-      console.log("Meta webhook detected → ignored");
+    const entry = req.body.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
+
+    const message = value?.messages?.[0];
+
+    if (!message) {
       return res.sendStatus(200);
     }
 
-    // =========================
-    // ✅ TWILIO FLOW
-    // =========================
-    const fromRaw = req.body.From;
-    const text = req.body.Body;
+    const from = message.from;
+    const text = message.text?.body || "";
 
-    if (!fromRaw || !text) {
-      console.log("Invalid Twilio payload");
-      return res.send("<Response></Response>");
+    console.log("MESSAGE RECEIVED:", text);
+
+    let reply = "Non ho capito 😅";
+
+    if (text.toLowerCase().includes("wifi")) {
+      reply = "📶 Network: ARRIS-6F59 | Password: Malta2025";
     }
 
-    const from = fromRaw.replace("whatsapp:", "");
+    if (text.toLowerCase().includes("parcheggio")) {
+      reply = "🚗 Parcheggio gratuito nei dintorni. Nessun parcheggio privato.";
+    }
 
-    console.log("Incoming Twilio:", from, text);
+    await fetch(
+      `https://graph.facebook.com/v19.0/${value.metadata.phone_number_id}/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${ACCESS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to: from,
+          text: { body: reply },
+        }),
+      }
+    );
 
-    // salva guest
-    await supabase.from("messages").insert({
-      phone: from,
-      role: "guest",
-      message: text,
-    });
-
-    // storico
-    const { data: history } = await supabase
-      .from("messages")
-      .select("*")
-      .eq("phone", from)
-      .order("created_at", { ascending: true });
-
-    const messages = history.map((m) => ({
-      role: m.role === "assistant" ? "assistant" : "user",
-      content: m.message,
-    }));
-
-    // AI
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
-      messages,
-    });
-
-    const reply =
-      completion.choices?.[0]?.message?.content ||
-      "Error generating response";
-
-    console.log("AI reply:", reply);
-
-    // salva risposta
-    await supabase.from("messages").insert({
-      phone: from,
-      role: "assistant",
-      message: reply,
-    });
-
-    // risposta Twilio
-    res.set("Content-Type", "text/xml");
-    res.send(`
-      <Response>
-        <Message>${reply}</Message>
-      </Response>
-    `);
-
+    res.sendStatus(200);
   } catch (err) {
-    console.error("SERVER ERROR:", err);
-
-    res.set("Content-Type", "text/xml");
-    res.send(`
-      <Response>
-        <Message>Error, try again.</Message>
-      </Response>
-    `);
+    console.error("ERROR:", err);
+    res.sendStatus(500);
   }
 });
 
-// =========================
-// START
-// =========================
-app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 Server running");
-});
+app.listen(10000, () => console.log("🚀 Server running"));
