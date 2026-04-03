@@ -1,105 +1,110 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <title>AI Co-Host Dashboard</title>
-  <meta charset="UTF-8">
-  <style>
-    body { font-family: Arial; padding: 20px; background:#f5f5f5; }
-    .card { background:white; padding:15px; margin:10px 0; border-radius:10px; }
-    .assistant { background:#d4edda; padding:10px; border-radius:10px; }
-    .guest { background:#cce5ff; padding:10px; border-radius:10px; }
-    button { margin:5px; }
-  </style>
-</head>
+const express = require("express");
+const cors = require("cors");
+const { createClient } = require("@supabase/supabase-js");
 
-<body>
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static("public"));
 
-<h1>📊 Conversations</h1>
-<button onclick="load()">Refresh</button>
-<div id="chat"></div>
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
 
-<h1>🧼 Cleaning Tasks</h1>
-<div id="tasks"></div>
+// ===============================
+// GET CONVERSATIONS
+// ===============================
+app.get("/conversations", async (req, res) => {
+  const { data } = await supabase
+    .from("messages")
+    .select("*")
+    .order("created_at", { ascending: true });
 
-<h2>➕ Create Booking</h2>
-<input id="phone" placeholder="Phone"><br>
-<input id="checkin" type="date"><br>
-<input id="checkout" type="date"><br>
-<button onclick="createBooking()">Create Booking</button>
+  res.json(data);
+});
 
-<script>
-async function load() {
-  // CHAT
-  const chatRes = await fetch("/conversations");
-  const chat = await chatRes.json();
+// ===============================
+// GET CLEANING TASKS
+// ===============================
+app.get("/cleaning-tasks", async (req, res) => {
+  const { data } = await supabase
+    .from("cleaning_tasks")
+    .select("*, cleaners(name, phone)")
+    .order("date", { ascending: true });
 
-  document.getElementById("chat").innerHTML =
-    chat.map(m => `
-      <div class="card">
-        <b>${m.phone}</b> (${m.role})<br>
-        ${m.message}
-      </div>
-    `).join("");
+  res.json(data);
+});
 
-  // TASKS
-  const res = await fetch("/cleaning-tasks");
-  const tasks = await res.json();
+// ===============================
+// GET CLEANERS
+// ===============================
+app.get("/cleaners", async (req, res) => {
+  const { data } = await supabase.from("cleaners").select("*");
+  res.json(data);
+});
 
-  const cleanersRes = await fetch("/cleaners");
-  const cleaners = await cleanersRes.json();
+// ===============================
+// CREATE BOOKING → CREA TASK + NOTIFICA
+// ===============================
+app.post("/create-booking", async (req, res) => {
+  const { phone, checkin, checkout } = req.body;
 
-  document.getElementById("tasks").innerHTML =
-    tasks.map(t => `
-      <div class="card">
-        🧼 ${t.date} - <b>${t.status}</b><br>
-        Cleaner: ${t.cleaners?.name || "none"}<br>
+  try {
+    const { data: booking } = await supabase
+      .from("bookings")
+      .insert([{ phone, checkin, checkout }])
+      .select()
+      .single();
 
-        <select onchange="assign('${t.id}', this.value)">
-          <option>Select cleaner</option>
-          ${cleaners.map(c => `
-            <option value="${c.id}">${c.name}</option>
-          `).join("")}
-        </select>
+    // crea cleaning task (check-out)
+    await supabase.from("cleaning_tasks").insert([
+      {
+        booking_id: booking.id,
+        date: checkout,
+        status: "pending",
+      },
+    ]);
 
-        <button onclick="complete('${t.id}')">✅ Done</button>
-      </div>
-    `).join("");
-}
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("error");
+  }
+});
 
-async function createBooking() {
-  await fetch("/create-booking", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      phone: document.getElementById("phone").value,
-      checkin: document.getElementById("checkin").value,
-      checkout: document.getElementById("checkout").value
+// ===============================
+// ASSEGNA CLEANER
+// ===============================
+app.post("/assign-cleaner", async (req, res) => {
+  const { taskId, cleanerId } = req.body;
+
+  await supabase
+    .from("cleaning_tasks")
+    .update({
+      cleaner_id: cleanerId,
+      status: "assigned",
     })
-  });
-  load();
-}
+    .eq("id", taskId);
 
-async function assign(taskId, cleanerId) {
-  await fetch("/assign-cleaner", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ taskId, cleanerId })
-  });
-  load();
-}
+  res.sendStatus(200);
+});
 
-async function complete(taskId) {
-  await fetch("/complete-task", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ taskId })
-  });
-  load();
-}
+// ===============================
+// COMPLETA TASK
+// ===============================
+app.post("/complete-task", async (req, res) => {
+  const { taskId } = req.body;
 
-setInterval(load, 3000);
-load();
-</script>
+  await supabase
+    .from("cleaning_tasks")
+    .update({ status: "completed" })
+    .eq("id", taskId);
 
-</body>
-</html>
+  res.sendStatus(200);
+});
+
+// ===============================
+app.listen(process.env.PORT || 3000, () => {
+  console.log("🚀 Server running");
+});
