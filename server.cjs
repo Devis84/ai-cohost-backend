@@ -19,7 +19,7 @@ const openai = new OpenAI({
 });
 
 // =========================
-// 🧠 RULES
+// RULES
 // =========================
 const rules = [
   {
@@ -43,18 +43,17 @@ function matchRule(text) {
 }
 
 // =========================
-// 🧼 CREATE CLEANING TASK
+// CLEANING TASK
 // =========================
 async function createCleaningTask(booking) {
   try {
-    const checkoutDate = booking.checkout;
+    const cleaningDate = booking.checkout;
 
-    // evita duplicati
     const { data: existing } = await supabase
       .from("cleaning_tasks")
       .select("id")
       .eq("property_id", booking.property_id)
-      .eq("date", checkoutDate)
+      .eq("cleaning_date", cleaningDate)
       .maybeSingle();
 
     if (existing) return;
@@ -62,38 +61,20 @@ async function createCleaningTask(booking) {
     await supabase.from("cleaning_tasks").insert([
       {
         property_id: booking.property_id,
-        date: checkoutDate,
+        booking_id: booking.id,
+        cleaning_date: cleaningDate,
         status: "pending",
-        assigned_to: null,
-        hourly_rate: 10, // default (puoi cambiarlo dopo)
+        hourly_rate: 10,
       },
     ]);
 
   } catch (err) {
-    console.error("Cleaning task error:", err);
+    console.error("Cleaning error:", err);
   }
 }
 
 // =========================
-// 💰 CALCOLO COSTO
-// =========================
-async function updateCleaningCost(task) {
-  if (!task.start_time || !task.end_time || !task.hourly_rate) return;
-
-  const start = new Date(task.start_time);
-  const end = new Date(task.end_time);
-
-  const hours = (end - start) / (1000 * 60 * 60);
-  const total = hours * task.hourly_rate;
-
-  await supabase
-    .from("cleaning_tasks")
-    .update({ total_amount: total })
-    .eq("id", task.id);
-}
-
-// =========================
-// 🔐 VERIFY
+// VERIFY
 // =========================
 app.get("/webhook", (req, res) => {
   if (req.query["hub.verify_token"] === VERIFY_TOKEN) {
@@ -103,7 +84,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // =========================
-// 📩 INCOMING
+// INCOMING
 // =========================
 app.post("/webhook", async (req, res) => {
   try {
@@ -116,7 +97,6 @@ app.post("/webhook", async (req, res) => {
 
     if (!text) return res.sendStatus(200);
 
-    // 🔒 DUPLICATI
     const { data: existing } = await supabase
       .from("messages")
       .select("id")
@@ -125,7 +105,6 @@ app.post("/webhook", async (req, res) => {
 
     if (existing) return res.sendStatus(200);
 
-    // 💾 salva msg
     await supabase.from("messages").insert([
       {
         phone: from,
@@ -136,7 +115,7 @@ app.post("/webhook", async (req, res) => {
     ]);
 
     // =========================
-    // 🏠 BOOKING + CLEANING
+    // BOOKING + CLEANING
     // =========================
     const { data: booking } = await supabase
       .from("bookings")
@@ -150,50 +129,27 @@ app.post("/webhook", async (req, res) => {
     if (booking) {
       await createCleaningTask(booking);
 
-      const today = new Date();
-      const checkIn = new Date(booking.checkin);
-      const checkOut = new Date(booking.checkout);
-
-      let status = "unknown";
-
-      if (today < checkIn) status = "before check-in";
-      else if (today >= checkIn && today <= checkOut) status = "during stay";
-      else status = "after check-out";
-
       bookingContext = `
 Guest booking:
 Property: ${booking.property_id}
 Check-in: ${booking.checkin}
 Check-out: ${booking.checkout}
-Status: ${status}
 `;
     }
 
     // =========================
-    // ⚡ RULES
+    // RULES
     // =========================
     const ruleResponse = matchRule(text);
 
     if (ruleResponse) {
-      await sendWhatsApp(from, ruleResponse);
+      await sendMessage(from, ruleResponse);
       return res.sendStatus(200);
     }
 
     // =========================
-    // 🤖 AI
+    // AI
     // =========================
-    const { data: history } = await supabase
-      .from("messages")
-      .select("*")
-      .eq("phone", from)
-      .order("created_at", { ascending: false })
-      .limit(10);
-
-    const messages = history.reverse().map((m) => ({
-      role: m.role === "assistant" ? "assistant" : "user",
-      content: m.message,
-    }));
-
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -204,16 +160,19 @@ You are an Airbnb co-host.
 
 ${bookingContext}
 
-Be helpful, concise, natural.
+Be helpful and natural.
 `,
         },
-        ...messages,
+        {
+          role: "user",
+          content: text,
+        },
       ],
     });
 
     const reply = completion.choices[0].message.content;
 
-    await sendWhatsApp(from, reply);
+    await sendMessage(from, reply);
 
   } catch (err) {
     console.error(err);
@@ -223,9 +182,9 @@ Be helpful, concise, natural.
 });
 
 // =========================
-// 📤 SEND FUNCTION
+// SEND
 // =========================
-async function sendWhatsApp(to, text) {
+async function sendMessage(to, text) {
   await supabase.from("messages").insert([
     {
       phone: to,
