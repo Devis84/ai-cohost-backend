@@ -1,5 +1,4 @@
 const express = require("express");
-const fetch = require("node-fetch");
 const bodyParser = require("body-parser");
 
 const app = express();
@@ -52,8 +51,6 @@ async function sendMessage(to, text) {
 async function getBookingByPhone(phone) {
   const cleanPhone = normalizePhone(phone);
 
-  console.log("🔍 Searching booking for:", cleanPhone);
-
   const res = await fetch(
     `${SUPABASE_URL}/rest/v1/bookings?guest_phone=eq.${cleanPhone}`,
     {
@@ -65,24 +62,12 @@ async function getBookingByPhone(phone) {
   );
 
   const data = await res.json();
-
-  console.log("📦 Booking result:", data);
-
   return data[0];
 }
 
 // ===== CREATE CLEANING TASK =====
 async function createCleaningTask(booking) {
-  console.log("🧹 Creating cleaning task...");
-
-  const payload = {
-    property_id: booking.property_id,
-    booking_id: booking.id,
-    cleaning_date: booking.checkout,
-    status: "pending",
-  };
-
-  console.log("📤 Payload:", payload);
+  if (!booking) return;
 
   const res = await fetch(`${SUPABASE_URL}/rest/v1/cleaning_tasks`, {
     method: "POST",
@@ -92,13 +77,16 @@ async function createCleaningTask(booking) {
       "Content-Type": "application/json",
       Prefer: "return=representation",
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      property_id: booking.property_id,
+      booking_id: booking.id,
+      cleaning_date: booking.checkout,
+      status: "pending",
+    }),
   });
 
-  const text = await res.text();
-
-  console.log("📥 Supabase response status:", res.status);
-  console.log("📥 Supabase response body:", text);
+  const data = await res.text();
+  console.log("Cleaning created:", data);
 }
 
 // ===== SAVE MESSAGE =====
@@ -118,7 +106,7 @@ async function saveMessage(phone, message, role) {
   });
 }
 
-// ===== AI LOGIC =====
+// ===== AI =====
 function getReply(text) {
   const msg = text.toLowerCase();
 
@@ -141,7 +129,7 @@ function getReply(text) {
   return "Sorry, I didn't understand.";
 }
 
-// ===== WEBHOOK RECEIVE =====
+// ===== WEBHOOK =====
 app.post("/webhook", async (req, res) => {
   try {
     const entry = req.body.entry?.[0];
@@ -153,16 +141,16 @@ app.post("/webhook", async (req, res) => {
     const from = message.from;
     const text = message.text?.body;
 
-    console.log("📩 Incoming:", from, text);
+    console.log("Incoming:", from, text);
 
     await saveMessage(from, text, "guest");
 
     const booking = await getBookingByPhone(from);
 
-    if (!booking) {
-      console.log("❌ NO BOOKING FOUND");
-    } else {
+    if (booking) {
       await createCleaningTask(booking);
+    } else {
+      console.log("Booking NOT found");
     }
 
     const reply = getReply(text);
@@ -172,12 +160,12 @@ app.post("/webhook", async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    console.error("🔥 ERROR:", err);
+    console.error("ERROR:", err);
     res.sendStatus(500);
   }
 });
 
 // ===== START =====
 app.listen(10000, () => {
-  console.log("🚀 Server running on port 10000");
+  console.log("Server running on port 10000");
 });
