@@ -19,7 +19,7 @@ const openai = new OpenAI({
 });
 
 // =========================
-// 🧠 RULES ENGINE
+// 🧠 RULES
 // =========================
 const rules = [
   {
@@ -42,7 +42,59 @@ function matchRule(text) {
   return null;
 }
 
+// =========================
+// 🧼 CREATE CLEANING TASK
+// =========================
+async function createCleaningTask(booking) {
+  try {
+    const checkoutDate = booking.checkout;
+
+    // evita duplicati
+    const { data: existing } = await supabase
+      .from("cleaning_tasks")
+      .select("id")
+      .eq("property_id", booking.property_id)
+      .eq("date", checkoutDate)
+      .maybeSingle();
+
+    if (existing) return;
+
+    await supabase.from("cleaning_tasks").insert([
+      {
+        property_id: booking.property_id,
+        date: checkoutDate,
+        status: "pending",
+        assigned_to: null,
+        hourly_rate: 10, // default (puoi cambiarlo dopo)
+      },
+    ]);
+
+  } catch (err) {
+    console.error("Cleaning task error:", err);
+  }
+}
+
+// =========================
+// 💰 CALCOLO COSTO
+// =========================
+async function updateCleaningCost(task) {
+  if (!task.start_time || !task.end_time || !task.hourly_rate) return;
+
+  const start = new Date(task.start_time);
+  const end = new Date(task.end_time);
+
+  const hours = (end - start) / (1000 * 60 * 60);
+  const total = hours * task.hourly_rate;
+
+  await supabase
+    .from("cleaning_tasks")
+    .update({ total_amount: total })
+    .eq("id", task.id);
+}
+
+// =========================
 // 🔐 VERIFY
+// =========================
 app.get("/webhook", (req, res) => {
   if (req.query["hub.verify_token"] === VERIFY_TOKEN) {
     return res.send(req.query["hub.challenge"]);
@@ -50,7 +102,9 @@ app.get("/webhook", (req, res) => {
   res.sendStatus(403);
 });
 
+// =========================
 // 📩 INCOMING
+// =========================
 app.post("/webhook", async (req, res) => {
   try {
     const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
@@ -62,7 +116,7 @@ app.post("/webhook", async (req, res) => {
 
     if (!text) return res.sendStatus(200);
 
-    // 🔒 DUPLICATE CHECK
+    // 🔒 DUPLICATI
     const { data: existing } = await supabase
       .from("messages")
       .select("id")
@@ -71,7 +125,7 @@ app.post("/webhook", async (req, res) => {
 
     if (existing) return res.sendStatus(200);
 
-    // 💾 salva messaggio
+    // 💾 salva msg
     await supabase.from("messages").insert([
       {
         phone: from,
@@ -82,18 +136,20 @@ app.post("/webhook", async (req, res) => {
     ]);
 
     // =========================
-    // 🏠 BOOKING CONTEXT (FIXED)
+    // 🏠 BOOKING + CLEANING
     // =========================
     const { data: booking } = await supabase
       .from("bookings")
       .select("*")
-      .eq("guest_phone", from) // 👈 FIX
+      .eq("guest_phone", from)
       .limit(1)
       .maybeSingle();
 
     let bookingContext = "";
 
     if (booking) {
+      await createCleaningTask(booking);
+
       const today = new Date();
       const checkIn = new Date(booking.checkin);
       const checkOut = new Date(booking.checkout);
@@ -119,27 +175,7 @@ Status: ${status}
     const ruleResponse = matchRule(text);
 
     if (ruleResponse) {
-      await supabase.from("messages").insert([
-        {
-          phone: from,
-          role: "assistant",
-          message: ruleResponse,
-        },
-      ]);
-
-      await fetch(`https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${ACCESS_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          to: from,
-          text: { body: ruleResponse },
-        }),
-      });
-
+      await sendWhatsApp(from, ruleResponse);
       return res.sendStatus(200);
     }
 
@@ -168,7 +204,7 @@ You are an Airbnb co-host.
 
 ${bookingContext}
 
-Be helpful, friendly and concise.
+Be helpful, concise, natural.
 `,
         },
         ...messages,
@@ -177,26 +213,7 @@ Be helpful, friendly and concise.
 
     const reply = completion.choices[0].message.content;
 
-    await supabase.from("messages").insert([
-      {
-        phone: from,
-        role: "assistant",
-        message: reply,
-      },
-    ]);
-
-    await fetch(`https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: from,
-        text: { body: reply },
-      }),
-    });
+    await sendWhatsApp(from, reply);
 
   } catch (err) {
     console.error(err);
@@ -204,5 +221,31 @@ Be helpful, friendly and concise.
 
   res.sendStatus(200);
 });
+
+// =========================
+// 📤 SEND FUNCTION
+// =========================
+async function sendWhatsApp(to, text) {
+  await supabase.from("messages").insert([
+    {
+      phone: to,
+      role: "assistant",
+      message: text,
+    },
+  ]);
+
+  await fetch(`https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      text: { body: text },
+    }),
+  });
+}
 
 app.listen(10000, () => console.log("🚀 Server running"));
