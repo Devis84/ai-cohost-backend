@@ -7,6 +7,9 @@ app.use(bodyParser.json());
 const VERIFY_TOKEN = "my_verify_token";
 const ACCESS_TOKEN = process.env.META_TOKEN;
 
+// 🧠 memoria semplice anti-duplicati
+const processedMessages = new Set();
+
 // 🔐 WEBHOOK VERIFY
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -23,27 +26,34 @@ app.get("/webhook", (req, res) => {
 
 // 📩 INCOMING MESSAGE
 app.post("/webhook", async (req, res) => {
-  console.log("RAW BODY:", JSON.stringify(req.body, null, 2));
-
   try {
     const entry = req.body.entry?.[0];
     const changes = entry?.changes?.[0];
     const message = changes?.value?.messages?.[0];
 
-    if (!message) {
+    if (!message) return res.sendStatus(200);
+
+    const messageId = message.id;
+
+    // 🔥 BLOCCA DUPLICATI
+    if (processedMessages.has(messageId)) {
+      console.log("Duplicate message ignored:", messageId);
       return res.sendStatus(200);
     }
+
+    processedMessages.add(messageId);
 
     const from = message.from;
     const text = message.text?.body?.toLowerCase();
 
+    if (!text) return res.sendStatus(200);
+
     let reply = "Sorry, I didn't understand.";
 
-    if (text && text.includes("wifi")) {
+    if (text.includes("wifi")) {
       reply = "📶 Network: ARRIS-6F59 | Password: Malta2025";
     }
 
-    // 👇 USA FETCH NATIVO (NO node-fetch)
     await fetch(`https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`, {
       method: "POST",
       headers: {
