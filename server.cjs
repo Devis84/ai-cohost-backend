@@ -1,148 +1,105 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const axios = require("axios");
-const { createClient } = require("@supabase/supabase-js");
+<!DOCTYPE html>
+<html>
+<head>
+  <title>AI Co-Host Dashboard</title>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: Arial; padding: 20px; background:#f5f5f5; }
+    .card { background:white; padding:15px; margin:10px 0; border-radius:10px; }
+    .assistant { background:#d4edda; padding:10px; border-radius:10px; }
+    .guest { background:#cce5ff; padding:10px; border-radius:10px; }
+    button { margin:5px; }
+  </style>
+</head>
 
-const app = express();
-app.use(bodyParser.json());
-app.use(express.static("public"));
+<body>
 
-const {
-  SUPABASE_URL,
-  SUPABASE_KEY,
-  WHATSAPP_TOKEN,
-  PHONE_NUMBER_ID,
-  HOST_PHONE
-} = process.env;
+<h1>📊 Conversations</h1>
+<button onclick="load()">Refresh</button>
+<div id="chat"></div>
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+<h1>🧼 Cleaning Tasks</h1>
+<div id="tasks"></div>
 
-// ======================
-// SEND WHATSAPP
-// ======================
-async function send(to, text) {
-  await axios.post(
-    `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to,
-      text: { body: text }
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json"
-      }
-    }
-  );
+<h2>➕ Create Booking</h2>
+<input id="phone" placeholder="Phone"><br>
+<input id="checkin" type="date"><br>
+<input id="checkout" type="date"><br>
+<button onclick="createBooking()">Create Booking</button>
+
+<script>
+async function load() {
+  // CHAT
+  const chatRes = await fetch("/conversations");
+  const chat = await chatRes.json();
+
+  document.getElementById("chat").innerHTML =
+    chat.map(m => `
+      <div class="card">
+        <b>${m.phone}</b> (${m.role})<br>
+        ${m.message}
+      </div>
+    `).join("");
+
+  // TASKS
+  const res = await fetch("/cleaning-tasks");
+  const tasks = await res.json();
+
+  const cleanersRes = await fetch("/cleaners");
+  const cleaners = await cleanersRes.json();
+
+  document.getElementById("tasks").innerHTML =
+    tasks.map(t => `
+      <div class="card">
+        🧼 ${t.date} - <b>${t.status}</b><br>
+        Cleaner: ${t.cleaners?.name || "none"}<br>
+
+        <select onchange="assign('${t.id}', this.value)">
+          <option>Select cleaner</option>
+          ${cleaners.map(c => `
+            <option value="${c.id}">${c.name}</option>
+          `).join("")}
+        </select>
+
+        <button onclick="complete('${t.id}')">✅ Done</button>
+      </div>
+    `).join("");
 }
 
-// ======================
-// SAVE MESSAGE
-// ======================
-async function saveMessage(phone, role, message, property_id) {
-  await supabase.from("messages").insert({
-    phone,
-    role,
-    message,
-    property_id
-  });
-}
-
-// ======================
-// BOOKINGS + CLEANING
-// ======================
-async function createBooking(propertyId, phone, checkin, checkout) {
-  const { data } = await supabase
-    .from("bookings")
-    .insert({
-      property_id: propertyId,
-      guest_phone: phone,
-      checkin,
-      checkout
+async function createBooking() {
+  await fetch("/create-booking", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      phone: document.getElementById("phone").value,
+      checkin: document.getElementById("checkin").value,
+      checkout: document.getElementById("checkout").value
     })
-    .select()
-    .single();
-
-  await supabase.from("cleaning_tasks").insert({
-    property_id: propertyId,
-    booking_id: data.id,
-    cleaning_date: checkout,
-    status: "pending"
   });
-
-  console.log("🧼 Cleaning scheduled:", checkout);
+  load();
 }
 
-// ======================
-// WEBHOOK
-// ======================
-app.post("/webhook", async (req, res) => {
-  try {
-    const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (!msg) return res.sendStatus(200);
+async function assign(taskId, cleanerId) {
+  await fetch("/assign-cleaner", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ taskId, cleanerId })
+  });
+  load();
+}
 
-    const from = msg.from;
-    const text = msg.text?.body;
+async function complete(taskId) {
+  await fetch("/complete-task", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ taskId })
+  });
+  load();
+}
 
-    const property_id = "default-property";
+setInterval(load, 3000);
+load();
+</script>
 
-    await saveMessage(from, "guest", text, property_id);
-
-    // risposta base
-    let reply = "🙂 I can help you with WiFi, check-in and info.";
-
-    if (text.toLowerCase().includes("wifi")) {
-      reply = "📶 WiFi: ARRIS-6F59 | Password: Malta2025";
-    }
-
-    await saveMessage(from, "assistant", reply, property_id);
-    await send(from, reply);
-
-    res.sendStatus(200);
-  } catch (err) {
-    console.error(err);
-    res.sendStatus(500);
-  }
-});
-
-// ======================
-// CREATE BOOKING API
-// ======================
-app.post("/create-booking", async (req, res) => {
-  const { phone, checkin, checkout } = req.body;
-
-  await createBooking("default-property", phone, checkin, checkout);
-
-  res.json({ success: true });
-});
-
-// ======================
-// GET CONVERSATIONS
-// ======================
-app.get("/conversations", async (req, res) => {
-  const { data } = await supabase
-    .from("messages")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(100);
-
-  res.json(data || []);
-});
-
-// ======================
-// GET CLEANING TASKS
-// ======================
-app.get("/cleaning-tasks", async (req, res) => {
-  const { data } = await supabase
-    .from("cleaning_tasks")
-    .select("*")
-    .order("cleaning_date", { ascending: true });
-
-  res.json(data || []);
-});
-
-// ======================
-app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 Server running");
-});
+</body>
+</html>
