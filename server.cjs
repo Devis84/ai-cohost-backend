@@ -11,12 +11,12 @@ const ACCESS_TOKEN = process.env.META_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
-// ====== UTILS ======
+// ===== UTILS =====
 function normalizePhone(phone) {
   return phone.replace("+", "").trim();
 }
 
-// ====== WEBHOOK VERIFY ======
+// ===== WEBHOOK VERIFY =====
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -29,7 +29,7 @@ app.get("/webhook", (req, res) => {
   }
 });
 
-// ====== SEND MESSAGE ======
+// ===== SEND MESSAGE =====
 async function sendMessage(to, text) {
   await fetch(
     `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -48,9 +48,11 @@ async function sendMessage(to, text) {
   );
 }
 
-// ====== GET BOOKING ======
+// ===== GET BOOKING =====
 async function getBookingByPhone(phone) {
   const cleanPhone = normalizePhone(phone);
+
+  console.log("🔍 Searching booking for:", cleanPhone);
 
   const res = await fetch(
     `${SUPABASE_URL}/rest/v1/bookings?guest_phone=eq.${cleanPhone}`,
@@ -63,12 +65,24 @@ async function getBookingByPhone(phone) {
   );
 
   const data = await res.json();
+
+  console.log("📦 Booking result:", data);
+
   return data[0];
 }
 
-// ====== CREATE CLEANING TASK ======
+// ===== CREATE CLEANING TASK =====
 async function createCleaningTask(booking) {
-  if (!booking) return;
+  console.log("🧹 Creating cleaning task...");
+
+  const payload = {
+    property_id: booking.property_id,
+    booking_id: booking.id,
+    cleaning_date: booking.checkout,
+    status: "pending",
+  };
+
+  console.log("📤 Payload:", payload);
 
   const res = await fetch(`${SUPABASE_URL}/rest/v1/cleaning_tasks`, {
     method: "POST",
@@ -76,20 +90,18 @@ async function createCleaningTask(booking) {
       apikey: SUPABASE_KEY,
       Authorization: `Bearer ${SUPABASE_KEY}`,
       "Content-Type": "application/json",
+      Prefer: "return=representation",
     },
-    body: JSON.stringify({
-      property_id: booking.property_id,
-      booking_id: booking.id,
-      cleaning_date: booking.checkout,
-      status: "pending",
-    }),
+    body: JSON.stringify(payload),
   });
 
-  const data = await res.text();
-  console.log("Cleaning task created:", data);
+  const text = await res.text();
+
+  console.log("📥 Supabase response status:", res.status);
+  console.log("📥 Supabase response body:", text);
 }
 
-// ====== SAVE MESSAGE ======
+// ===== SAVE MESSAGE =====
 async function saveMessage(phone, message, role) {
   await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
     method: "POST",
@@ -106,7 +118,7 @@ async function saveMessage(phone, message, role) {
   });
 }
 
-// ====== SIMPLE AI LOGIC ======
+// ===== AI LOGIC =====
 function getReply(text) {
   const msg = text.toLowerCase();
 
@@ -122,58 +134,50 @@ function getReply(text) {
     return "Check-in is from 15:00 (3 PM).";
   }
 
-  if (msg.includes("early") || msg.includes("earlier")) {
-    return "Early check-in may be possible depending on availability. Let me know your arrival time.";
+  if (msg.includes("early")) {
+    return "Early check-in may be possible depending on availability.";
   }
 
   return "Sorry, I didn't understand.";
 }
 
-// ====== WEBHOOK RECEIVE ======
+// ===== WEBHOOK RECEIVE =====
 app.post("/webhook", async (req, res) => {
   try {
     const entry = req.body.entry?.[0];
     const changes = entry?.changes?.[0];
     const message = changes?.value?.messages?.[0];
 
-    if (!message) {
-      return res.sendStatus(200);
-    }
+    if (!message) return res.sendStatus(200);
 
     const from = message.from;
     const text = message.text?.body;
 
-    console.log("Incoming:", from, text);
+    console.log("📩 Incoming:", from, text);
 
-    // salva messaggio utente
     await saveMessage(from, text, "guest");
 
-    // trova booking
     const booking = await getBookingByPhone(from);
 
-    // crea cleaning task SOLO SE ESISTE booking
-    if (booking) {
-      await createCleaningTask(booking);
+    if (!booking) {
+      console.log("❌ NO BOOKING FOUND");
     } else {
-      console.log("⚠️ Booking NOT found for:", from);
+      await createCleaningTask(booking);
     }
 
-    // risposta
     const reply = getReply(text);
 
     await sendMessage(from, reply);
-
-    // salva risposta
     await saveMessage(from, reply, "assistant");
 
     res.sendStatus(200);
   } catch (err) {
-    console.error(err);
+    console.error("🔥 ERROR:", err);
     res.sendStatus(500);
   }
 });
 
-// ====== START SERVER ======
+// ===== START =====
 app.listen(10000, () => {
-  console.log("Server running on port 10000");
+  console.log("🚀 Server running on port 10000");
 });
