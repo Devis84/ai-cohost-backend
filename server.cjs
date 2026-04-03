@@ -7,6 +7,8 @@ app.use(bodyParser.json());
 const VERIFY_TOKEN = "my_verify_token";
 const ACCESS_TOKEN = process.env.META_TOKEN;
 
+const CLEANER_PHONE = process.env.CLEANER_PHONE;
+
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
@@ -38,19 +40,7 @@ async function supabaseFetch(path, options = {}) {
   });
 }
 
-// =========================
-// 🔐 WEBHOOK VERIFY
-// =========================
-app.get("/webhook", (req, res) => {
-  if (req.query["hub.verify_token"] === VERIFY_TOKEN) {
-    return res.send(req.query["hub.challenge"]);
-  }
-  res.sendStatus(403);
-});
-
-// =========================
-// 📤 SEND MESSAGE
-// =========================
+// ===== SEND MESSAGE =====
 async function sendMessage(to, text) {
   await fetch(
     `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -69,42 +59,34 @@ async function sendMessage(to, text) {
   );
 }
 
-// =========================
-// 📩 SAVE MESSAGE
-// =========================
-async function saveMessage(phone, message, role) {
-  await supabaseFetch("messages", {
-    method: "POST",
-    body: JSON.stringify({
-      phone: normalizePhone(phone),
-      message,
-      role,
-    }),
-  });
+// ===== NOTIFY CLEANER =====
+async function notifyCleaner(task) {
+  if (!CLEANER_PHONE) return;
+
+  const msg = `🧼 New cleaning task
+
+Property: ${task.property_id}
+Date: ${task.cleaning_date}
+
+Please confirm.`;
+
+  await sendMessage(CLEANER_PHONE, msg);
 }
 
-// =========================
-// 🏠 BOOKING
-// =========================
+// ===== BOOKING =====
 async function getBooking(phone) {
-  const cleanPhone = normalizePhone(phone);
-
   const res = await supabaseFetch(
-    `bookings?guest_phone=eq.${cleanPhone}`
+    `bookings?guest_phone=eq.${normalizePhone(phone)}`
   );
-
   const data = await res.json();
   return data[0];
 }
 
-// =========================
-// 🧼 CLEANING CORE
-// =========================
+// ===== CLEANING =====
 async function cleaningExists(booking_id) {
   const res = await supabaseFetch(
     `cleaning_tasks?booking_id=eq.${booking_id}`
   );
-
   const data = await res.json();
   return data.length > 0;
 }
@@ -127,14 +109,13 @@ async function createCleaningTask(booking) {
   });
 
   const data = await res.json();
-  console.log("🧹 Created cleaning:", data);
+
+  if (data[0]) {
+    await notifyCleaner(data[0]);
+  }
 }
 
-// =========================
-// 📊 DASHBOARD API
-// =========================
-
-// 👉 GET ALL TASKS
+// ===== DASHBOARD API =====
 app.get("/cleaning", async (req, res) => {
   const result = await supabaseFetch(
     "cleaning_tasks?order=cleaning_date.asc"
@@ -143,7 +124,6 @@ app.get("/cleaning", async (req, res) => {
   res.json(data);
 });
 
-// 👉 GET BY DATE RANGE (CALENDAR)
 app.get("/cleaning/calendar", async (req, res) => {
   const { start, end } = req.query;
 
@@ -155,7 +135,6 @@ app.get("/cleaning/calendar", async (req, res) => {
   res.json(data);
 });
 
-// 👉 UPDATE TASK (CLEANER SYSTEM)
 app.post("/cleaning/update", async (req, res) => {
   try {
     const {
@@ -189,44 +168,34 @@ app.post("/cleaning/update", async (req, res) => {
       body: JSON.stringify(updates),
     });
 
-    res.json({
-      success: true,
-      total_amount,
-    });
+    res.json({ success: true, total_amount });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: "update failed" });
   }
 });
 
-// =========================
-// 🤖 AI
-// =========================
-function getReply(text) {
-  const msg = text.toLowerCase();
+// ===== SIMPLE DASHBOARD UI =====
+app.get("/", (req, res) => {
+  res.send(`
+  <html>
+  <body>
+    <h2>🧼 Cleaning Dashboard</h2>
+    <button onclick="load()">Load Tasks</button>
+    <pre id="out"></pre>
 
-  if (msg.includes("wifi")) {
-    return "📶 Network: ARRIS-6F59\n🔑 Password: Malta2025";
-  }
+    <script>
+      async function load() {
+        const res = await fetch('/cleaning');
+        const data = await res.json();
+        document.getElementById('out').innerText = JSON.stringify(data, null, 2);
+      }
+    </script>
+  </body>
+  </html>
+  `);
+});
 
-  if (msg.includes("parking")) {
-    return "🚗 Free street parking nearby. No private parking.";
-  }
-
-  if (msg.includes("check-in")) {
-    return "Check-in is from 15:00 (3 PM).";
-  }
-
-  if (msg.includes("early")) {
-    return "Early check-in may be possible depending on availability.";
-  }
-
-  return "Sorry, I didn't understand.";
-}
-
-// =========================
-// 📩 WEBHOOK
-// =========================
+// ===== WEBHOOK =====
 app.post("/webhook", async (req, res) => {
   try {
     const message =
@@ -237,29 +206,19 @@ app.post("/webhook", async (req, res) => {
     const from = message.from;
     const text = message.text?.body;
 
-    await saveMessage(from, text, "guest");
-
     const booking = await getBooking(from);
     if (booking) await createCleaningTask(booking);
 
-    const reply = getReply(text);
-
-    await sendMessage(from, reply);
-    await saveMessage(from, reply, "assistant");
+    await sendMessage(from, "Message received");
 
     res.sendStatus(200);
   } catch (err) {
-    console.error(err);
     res.sendStatus(500);
   }
 });
 
-// =========================
-// ⏱ SCHEDULER
-// =========================
+// ===== SCHEDULER =====
 async function runCleaningScheduler() {
-  console.log("⏱ Sync cleaning...");
-
   const res = await supabaseFetch("bookings");
   const bookings = await res.json();
 
@@ -271,12 +230,9 @@ async function runCleaningScheduler() {
   }
 }
 
-// ogni 5 minuti
 setInterval(runCleaningScheduler, 5 * 60 * 1000);
 
-// =========================
-// 🚀 START
-// =========================
+// ===== START =====
 app.listen(10000, () => {
-  console.log("🚀 Server running (PRO version)");
+  console.log("🚀 PRO MAX system running");
 });
