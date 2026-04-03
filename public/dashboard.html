@@ -3,57 +3,127 @@
 <head>
   <title>AI Co-Host Dashboard</title>
   <meta charset="UTF-8">
+  <style>
+    body { font-family: Arial; padding: 20px; background:#f5f5f5; }
+
+    .card {
+      background:white;
+      padding:15px;
+      margin:10px 0;
+      border-radius:10px;
+    }
+
+    .assistant {
+      background:#d4edda;
+      padding:10px;
+      border-radius:10px;
+      margin:5px 0;
+    }
+
+    .guest {
+      background:#cce5ff;
+      padding:10px;
+      border-radius:10px;
+      margin:5px 0;
+    }
+
+    button { margin:5px; }
+  </style>
 </head>
 
 <body>
 
-<h2>📊 Conversations</h2>
-<button onclick="loadMessages()">Refresh</button>
-<div id="messages"></div>
+<h1>📊 Conversations</h1>
+<button onclick="load()">Refresh</button>
+<div id="chat"></div>
 
-<h2>🧼 Cleaning Tasks</h2>
-<button onclick="loadCleaning()">Refresh</button>
-<div id="cleaning"></div>
+<h1>🧼 Cleaning Tasks</h1>
+<div id="tasks"></div>
 
 <h2>➕ Create Booking</h2>
-
 <input id="phone" placeholder="Phone"><br>
-<input id="checkin" placeholder="Check-in (YYYY-MM-DD)"><br>
-<input id="checkout" placeholder="Check-out (YYYY-MM-DD)"><br>
-
+<input id="checkin" type="date"><br>
+<input id="checkout" type="date"><br>
 <button onclick="createBooking()">Create Booking</button>
 
 <script>
-async function loadMessages() {
-  const res = await fetch("/conversations");
-  const data = await res.json();
 
-  document.getElementById("messages").innerHTML =
-    data.map(m => `<p><b>${m.phone}</b>: ${m.message}</p>`).join("");
-}
+async function load() {
 
-async function loadCleaning() {
+  // CHAT
+  const chatRes = await fetch("/conversations");
+  const chat = await chatRes.json();
+
+  document.getElementById("chat").innerHTML =
+    chat.map(m => `
+      <div class="card">
+        <b>${m.phone}</b><br>
+        <div class="${m.role}">
+          ${m.role}<br>
+          ${m.message}
+        </div>
+      </div>
+    `).join("");
+
+  // TASKS
   const res = await fetch("/cleaning-tasks");
-  const data = await res.json();
+  const tasks = await res.json();
 
-  document.getElementById("cleaning").innerHTML =
-    data.map(c => `<p>🧼 ${c.cleaning_date} - ${c.status}</p>`).join("");
+  const cleanersRes = await fetch("/cleaners");
+  const cleaners = await cleanersRes.json();
+
+  document.getElementById("tasks").innerHTML =
+    tasks.map(t => `
+      <div class="card">
+        🧼 ${t.date} - <b>${t.status}</b><br>
+        Cleaner: ${t.cleaners?.name || "none"}<br>
+
+        <select onchange="assign('${t.id}', this.value)">
+          <option>Select cleaner</option>
+          ${cleaners.map(c => `
+            <option value="${c.id}">${c.name}</option>
+          `).join("")}
+        </select>
+
+        <button onclick="complete('${t.id}')">✅ Done</button>
+      </div>
+    `).join("");
 }
 
 async function createBooking() {
   await fetch("/create-booking", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {"Content-Type":"application/json"},
     body: JSON.stringify({
       phone: document.getElementById("phone").value,
       checkin: document.getElementById("checkin").value,
       checkout: document.getElementById("checkout").value
     })
   });
+  load();
 }
 
-loadMessages();
-loadCleaning();
+async function assign(taskId, cleanerId) {
+  await fetch("/assign-cleaner", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ taskId, cleanerId })
+  });
+  load();
+}
+
+async function complete(taskId) {
+  await fetch("/complete-task", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ taskId })
+  });
+  load();
+}
+
+setInterval(load, 3000);
+load();
+
 </script>
 
 </body>
