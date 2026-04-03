@@ -1,31 +1,20 @@
 const express = require("express");
 const bodyParser = require("body-parser");
+const ical = require("node-ical");
 
 const app = express();
 app.use(bodyParser.json());
 
-const VERIFY_TOKEN = "my_verify_token";
-const ACCESS_TOKEN = process.env.META_TOKEN;
-
-const CLEANER_PHONE = process.env.CLEANER_PHONE;
+const ICAL_URL = process.env.ICAL_URL;
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
-// ===== UTILS =====
-function normalizePhone(phone) {
-  return phone.replace("+", "").trim();
-}
-
-function calculateTotal(start, end, rate) {
-  if (!start || !end || !rate) return null;
-
-  const startDate = new Date(`1970-01-01T${start}`);
-  const endDate = new Date(`1970-01-01T${end}`);
-
-  const hours = (endDate - startDate) / (1000 * 60 * 60);
-  return Number((hours * rate).toFixed(2));
-}
+// 👇 PROPERTY CONFIG (SCALABILE)
+const PROPERTY = {
+  id: "maltese_maisonette",
+  name: "Maltese Maisonette",
+};
 
 // ===== SUPABASE =====
 async function supabaseFetch(path, options = {}) {
@@ -40,46 +29,35 @@ async function supabaseFetch(path, options = {}) {
   });
 }
 
-// ===== SEND MESSAGE =====
-async function sendMessage(to, text) {
-  await fetch(
-    `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to,
-        text: { body: text },
-      }),
-    }
-  );
-}
-
-// ===== NOTIFY CLEANER =====
-async function notifyCleaner(task) {
-  if (!CLEANER_PHONE) return;
-
-  const msg = `🧼 New cleaning task
-
-Property: ${task.property_id}
-Date: ${task.cleaning_date}
-
-Please confirm.`;
-
-  await sendMessage(CLEANER_PHONE, msg);
-}
-
-// ===== BOOKING =====
-async function getBooking(phone) {
+// ===== BOOKING EXISTS =====
+async function bookingExists(checkin, checkout) {
   const res = await supabaseFetch(
-    `bookings?guest_phone=eq.${normalizePhone(phone)}`
+    `bookings?property_id=eq.${PROPERTY.id}&checkin=eq.${checkin}&checkout=eq.${checkout}`
   );
   const data = await res.json();
-  return data[0];
+  return data.length > 0;
+}
+
+// ===== CREATE BOOKING =====
+async function createBooking(checkin, checkout) {
+  const exists = await bookingExists(checkin, checkout);
+  if (exists) return;
+
+  const payload = {
+    guest_phone: "ical",
+    property_id: PROPERTY.id,
+    checkin,
+    checkout,
+  };
+
+  const res = await supabaseFetch("bookings", {
+    method: "POST",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json();
+  console.log("📅 Booking created:", data);
 }
 
 // ===== CLEANING =====
@@ -109,130 +87,60 @@ async function createCleaningTask(booking) {
   });
 
   const data = await res.json();
+  console.log("🧹 Cleaning created:", data);
+}
 
-  if (data[0]) {
-    await notifyCleaner(data[0]);
+// ===== ICAL SYNC =====
+async function runIcalSync() {
+  try {
+    console.log("🔄 Syncing iCal for:", PROPERTY.name);
+
+    const data = await ical.async.fromURL(ICAL_URL);
+
+    for (const k in data) {
+      const event = data[k];
+
+      if (event.type === "VEVENT") {
+        const checkin = event.start.toISOString().split("T")[0];
+        const checkout = event.end.toISOString().split("T")[0];
+
+        await createBooking(checkin, checkout);
+      }
+    }
+  } catch (err) {
+    console.error("❌ iCal error:", err);
   }
 }
 
-// ===== DASHBOARD API =====
-app.get("/cleaning", async (req, res) => {
-  const result = await supabaseFetch(
-    "cleaning_tasks?order=cleaning_date.asc"
-  );
-  const data = await result.json();
-  res.json(data);
-});
-
-app.get("/cleaning/calendar", async (req, res) => {
-  const { start, end } = req.query;
-
-  const result = await supabaseFetch(
-    `cleaning_tasks?cleaning_date=gte.${start}&cleaning_date=lte.${end}&order=cleaning_date.asc`
+// ===== CLEANING SYNC =====
+async function runCleaningSync() {
+  const res = await supabaseFetch(
+    `bookings?property_id=eq.${PROPERTY.id}`
   );
 
-  const data = await result.json();
-  res.json(data);
-});
-
-app.post("/cleaning/update", async (req, res) => {
-  try {
-    const {
-      id,
-      cleaner,
-      start_time,
-      end_time,
-      hourly_rate,
-      notes,
-      status,
-    } = req.body;
-
-    const total_amount = calculateTotal(
-      start_time,
-      end_time,
-      hourly_rate
-    );
-
-    const updates = {
-      cleaner,
-      start_time,
-      end_time,
-      hourly_rate,
-      total_amount,
-      notes,
-      status,
-    };
-
-    await supabaseFetch(`cleaning_tasks?id=eq.${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(updates),
-    });
-
-    res.json({ success: true, total_amount });
-  } catch (err) {
-    res.status(500).json({ error: "update failed" });
-  }
-});
-
-// ===== SIMPLE DASHBOARD UI =====
-app.get("/", (req, res) => {
-  res.send(`
-  <html>
-  <body>
-    <h2>🧼 Cleaning Dashboard</h2>
-    <button onclick="load()">Load Tasks</button>
-    <pre id="out"></pre>
-
-    <script>
-      async function load() {
-        const res = await fetch('/cleaning');
-        const data = await res.json();
-        document.getElementById('out').innerText = JSON.stringify(data, null, 2);
-      }
-    </script>
-  </body>
-  </html>
-  `);
-});
-
-// ===== WEBHOOK =====
-app.post("/webhook", async (req, res) => {
-  try {
-    const message =
-      req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-
-    if (!message) return res.sendStatus(200);
-
-    const from = message.from;
-    const text = message.text?.body;
-
-    const booking = await getBooking(from);
-    if (booking) await createCleaningTask(booking);
-
-    await sendMessage(from, "Message received");
-
-    res.sendStatus(200);
-  } catch (err) {
-    res.sendStatus(500);
-  }
-});
-
-// ===== SCHEDULER =====
-async function runCleaningScheduler() {
-  const res = await supabaseFetch("bookings");
   const bookings = await res.json();
 
   for (const booking of bookings) {
-    const exists = await cleaningExists(booking.id);
-    if (!exists) {
-      await createCleaningTask(booking);
-    }
+    await createCleaningTask(booking);
   }
 }
 
-setInterval(runCleaningScheduler, 5 * 60 * 1000);
+// ===== FULL SYNC =====
+async function runFullSync() {
+  await runIcalSync();
+  await runCleaningSync();
+}
+
+// ===== MANUAL TEST =====
+app.get("/sync", async (req, res) => {
+  await runFullSync();
+  res.send("✅ Sync completed");
+});
+
+// ===== SCHEDULER =====
+setInterval(runFullSync, 5 * 60 * 1000);
 
 // ===== START =====
 app.listen(10000, () => {
-  console.log("🚀 PRO MAX system running");
+  console.log("🚀 ICAL SYSTEM READY (Maltese Maisonette)");
 });
