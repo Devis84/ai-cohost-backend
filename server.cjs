@@ -23,6 +23,46 @@ const openai = new OpenAI({
 // 🧠 anti-duplicati
 const processedMessages = new Set();
 
+// =========================
+// 🧠 RULES ENGINE (SCALABILE)
+// =========================
+const rules = [
+  {
+    keywords: ["wifi", "internet"],
+    response:
+      "📶 Network: ARRIS-6F59\n🔑 Password: Malta2025",
+  },
+  {
+    keywords: ["check-in", "check in"],
+    response:
+      "🕒 Check-in is from 15:00 (3 PM). Let me know if you need flexibility.",
+  },
+  {
+    keywords: ["check-out", "checkout", "check out"],
+    response:
+      "🕚 Check-out is before 11:00 AM.",
+  },
+  {
+    keywords: ["parking", "parcheggio"],
+    response:
+      "🚗 Free street parking is available nearby. No private parking.",
+  },
+];
+
+// 🔍 RULE MATCHER
+function matchRule(text) {
+  const lower = text.toLowerCase();
+
+  for (let rule of rules) {
+    for (let keyword of rule.keywords) {
+      if (lower.includes(keyword)) {
+        return rule.response;
+      }
+    }
+  }
+  return null;
+}
+
 // 🔐 VERIFY
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -54,7 +94,7 @@ app.post("/webhook", async (req, res) => {
 
     if (!text) return res.sendStatus(200);
 
-    // 💾 salva messaggio utente
+    // 💾 salva user message
     await supabase.from("messages").insert([
       {
         phone: from,
@@ -63,7 +103,42 @@ app.post("/webhook", async (req, res) => {
       },
     ]);
 
-    // 📚 recupera ultimi messaggi
+    // =========================
+    // ⚡ RULE ENGINE FIRST
+    // =========================
+    const ruleResponse = matchRule(text);
+
+    if (ruleResponse) {
+      // 💾 salva risposta
+      await supabase.from("messages").insert([
+        {
+          phone: from,
+          role: "assistant",
+          message: ruleResponse,
+        },
+      ]);
+
+      // 📤 invia
+      await fetch(`https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${ACCESS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to: from,
+          text: { body: ruleResponse },
+        }),
+      });
+
+      return res.sendStatus(200); // 🔥 STOP QUI (NO AI)
+    }
+
+    // =========================
+    // 🤖 AI FALLBACK
+    // =========================
+
     const { data: history } = await supabase
       .from("messages")
       .select("*")
@@ -75,17 +150,16 @@ app.post("/webhook", async (req, res) => {
       .reverse()
       .map((m) => ({
         role: m.role === "assistant" ? "assistant" : "user",
-        content: m.message, // 👈 QUI conversione corretta
+        content: m.message,
       }));
 
-    // 🤖 AI RESPONSE
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
           content:
-            "You are an Airbnb co-host. Be helpful, concise, friendly. Answer like a real host.",
+            "You are an Airbnb co-host. Be helpful, concise, and natural.",
         },
         ...messages,
       ],
@@ -93,7 +167,7 @@ app.post("/webhook", async (req, res) => {
 
     const reply = completion.choices[0].message.content;
 
-    // 💾 salva risposta
+    // 💾 salva AI risposta
     await supabase.from("messages").insert([
       {
         phone: from,
@@ -102,7 +176,7 @@ app.post("/webhook", async (req, res) => {
       },
     ]);
 
-    // 📤 invia WhatsApp
+    // 📤 invia
     await fetch(`https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`, {
       method: "POST",
       headers: {
