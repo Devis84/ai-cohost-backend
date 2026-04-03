@@ -1,110 +1,87 @@
 const express = require("express");
-const cors = require("cors");
+const bodyParser = require("body-parser");
 const { createClient } = require("@supabase/supabase-js");
+const OpenAI = require("openai");
 
 const app = express();
-app.use(cors());
-app.use(express.json());
-app.use(express.static("public"));
+app.use(bodyParser.urlencoded({ extended: false }));
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
 
-// ===============================
-// GET CONVERSATIONS
-// ===============================
-app.get("/conversations", async (req, res) => {
-  const { data } = await supabase
-    .from("messages")
-    .select("*")
-    .order("created_at", { ascending: true });
-
-  res.json(data);
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ===============================
-// GET CLEANING TASKS
-// ===============================
-app.get("/cleaning-tasks", async (req, res) => {
-  const { data } = await supabase
-    .from("cleaning_tasks")
-    .select("*, cleaners(name, phone)")
-    .order("date", { ascending: true });
-
-  res.json(data);
-});
-
-// ===============================
-// GET CLEANERS
-// ===============================
-app.get("/cleaners", async (req, res) => {
-  const { data } = await supabase.from("cleaners").select("*");
-  res.json(data);
-});
-
-// ===============================
-// CREATE BOOKING → CREA TASK + NOTIFICA
-// ===============================
-app.post("/create-booking", async (req, res) => {
-  const { phone, checkin, checkout } = req.body;
-
+// =========================
+// WEBHOOK WHATSAPP
+// =========================
+app.post("/webhook", async (req, res) => {
   try {
-    const { data: booking } = await supabase
-      .from("bookings")
-      .insert([{ phone, checkin, checkout }])
-      .select()
-      .single();
+    const from = req.body.From.replace("whatsapp:", "");
+    const text = req.body.Body;
 
-    // crea cleaning task (check-out)
-    await supabase.from("cleaning_tasks").insert([
-      {
-        booking_id: booking.id,
-        date: checkout,
-        status: "pending",
-      },
-    ]);
+    console.log("Incoming:", from, text);
 
-    res.json({ success: true });
+    // salva messaggio guest
+    await supabase.from("messages").insert({
+      phone: from,
+      role: "guest",
+      message: text,
+    });
+
+    // recupera storico
+    const { data: history } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("phone", from)
+      .order("created_at", { ascending: true });
+
+    const messages = history.map((m) => ({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: m.message,
+    }));
+
+    // AI risposta
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages,
+    });
+
+    const reply = completion.choices[0].message.content;
+
+    // salva risposta
+    await supabase.from("messages").insert({
+      phone: from,
+      role: "assistant",
+      message: reply,
+    });
+
+    // ⚠️ RISPOSTA CORRETTA PER TWILIO (FONDAMENTALE)
+    res.set("Content-Type", "text/xml");
+    res.send(`
+      <Response>
+        <Message>${reply}</Message>
+      </Response>
+    `);
+
   } catch (err) {
     console.error(err);
-    res.status(500).send("error");
+
+    res.set("Content-Type", "text/xml");
+    res.send(`
+      <Response>
+        <Message>Errore temporaneo, riprova.</Message>
+      </Response>
+    `);
   }
 });
 
-// ===============================
-// ASSEGNA CLEANER
-// ===============================
-app.post("/assign-cleaner", async (req, res) => {
-  const { taskId, cleanerId } = req.body;
-
-  await supabase
-    .from("cleaning_tasks")
-    .update({
-      cleaner_id: cleanerId,
-      status: "assigned",
-    })
-    .eq("id", taskId);
-
-  res.sendStatus(200);
-});
-
-// ===============================
-// COMPLETA TASK
-// ===============================
-app.post("/complete-task", async (req, res) => {
-  const { taskId } = req.body;
-
-  await supabase
-    .from("cleaning_tasks")
-    .update({ status: "completed" })
-    .eq("id", taskId);
-
-  res.sendStatus(200);
-});
-
-// ===============================
+// =========================
+// SERVER
+// =========================
 app.listen(process.env.PORT || 3000, () => {
   console.log("🚀 Server running");
 });
