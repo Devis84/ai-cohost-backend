@@ -30,64 +30,128 @@ async function supabaseFetch(path, options = {}) {
   });
 }
 
-// ===== UPDATE CLEANING (FIX SERIO) =====
-async function updateCleaningTask(id, updates) {
-  const cleanPayload = {};
+// ===== BOOKING EXISTS =====
+async function bookingExists(checkin, checkout) {
+  const res = await supabaseFetch(
+    `bookings?property_id=eq.${PROPERTY.id}&checkin=eq.${checkin}&checkout=eq.${checkout}`
+  );
+  const data = await res.json();
+  return data.length > 0;
+}
 
-  // 👇 invia SOLO campi validi
-  for (const key in updates) {
-    if (updates[key] !== undefined && updates[key] !== null) {
-      cleanPayload[key] = updates[key];
-    }
-  }
+// ===== CREATE BOOKING =====
+async function createBooking(checkin, checkout) {
+  const exists = await bookingExists(checkin, checkout);
+  if (exists) return;
 
-  const res = await supabaseFetch(`cleaning_tasks?id=eq.${id}`, {
-    method: "PATCH",
-    body: JSON.stringify(cleanPayload),
+  const res = await supabaseFetch("bookings", {
+    method: "POST",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({
+      guest_phone: "ical",
+      property_id: PROPERTY.id,
+      checkin,
+      checkout,
+    }),
   });
 
-  if (!res.ok) {
-    console.error("❌ Update error:", await res.text());
-    return false;
-  }
-
-  const result = await res.text();
-  console.log("✅ Updated:", result);
-
-  return true;
+  const data = await res.json();
+  console.log("📅 Booking created:", data);
 }
 
-// ===== CALCOLO COSTO =====
-function calculateTotal(start_time, end_time, hourly_rate) {
-  if (!start_time || !end_time || !hourly_rate) return null;
-
-  const [sh, sm] = start_time.split(":").map(Number);
-  const [eh, em] = end_time.split(":").map(Number);
-
-  const start = sh + sm / 60;
-  const end = eh + em / 60;
-
-  const hours = end - start;
-  return Math.round(hours * hourly_rate * 100) / 100;
+// ===== CLEANING EXISTS =====
+async function cleaningExists(booking_id) {
+  const res = await supabaseFetch(
+    `cleaning_tasks?booking_id=eq.${booking_id}`
+  );
+  const data = await res.json();
+  return data.length > 0;
 }
 
-// ===== UPDATE API =====
-app.post("/cleaning/update", async (req, res) => {
-  try {
-    const { id, cleaner, start_time, end_time, hourly_rate, notes, status } =
-      req.body;
+// ===== CREATE CLEANING =====
+async function createCleaningTask(booking) {
+  const exists = await cleaningExists(booking.id);
+  if (exists) return;
 
-    if (!id) {
-      return res.status(400).send("❌ Missing ID");
+  const res = await supabaseFetch("cleaning_tasks", {
+    method: "POST",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({
+      property_id: booking.property_id,
+      booking_id: booking.id,
+      cleaning_date: booking.checkout,
+      status: "pending",
+    }),
+  });
+
+  const data = await res.json();
+  console.log("🧹 Cleaning created:", data);
+}
+
+// ===== ICAL SYNC =====
+async function runIcalSync() {
+  const data = await ical.async.fromURL(ICAL_URL);
+
+  for (const k in data) {
+    const event = data[k];
+
+    if (event.type === "VEVENT") {
+      const checkin = event.start.toISOString().split("T")[0];
+      const checkout = event.end.toISOString().split("T")[0];
+
+      await createBooking(checkin, checkout);
     }
+  }
+}
 
-    const total_amount = calculateTotal(
-      start_time,
-      end_time,
-      hourly_rate
-    );
+// ===== CLEANING SYNC =====
+async function runCleaningSync() {
+  const res = await supabaseFetch(
+    `bookings?property_id=eq.${PROPERTY.id}`
+  );
+  const bookings = await res.json();
 
-    const success = await updateCleaningTask(id, {
+  for (const booking of bookings) {
+    await createCleaningTask(booking);
+  }
+}
+
+// ===== FULL SYNC =====
+async function runFullSync() {
+  await runIcalSync();
+  await runCleaningSync();
+}
+
+// ===== SYNC ENDPOINT =====
+app.get("/sync", async (req, res) => {
+  await runFullSync();
+  res.send("✅ Sync completed");
+});
+
+// ===== UPDATE CLEANING =====
+function calculateTotal(start, end, rate) {
+  if (!start || !end || !rate) return null;
+
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+
+  const hours = eh + em / 60 - (sh + sm / 60);
+  return Math.round(hours * rate * 100) / 100;
+}
+
+app.post("/cleaning/update", async (req, res) => {
+  const { id, cleaner, start_time, end_time, hourly_rate, notes, status } =
+    req.body;
+
+  const total_amount = calculateTotal(
+    start_time,
+    end_time,
+    hourly_rate
+  );
+
+  await supabaseFetch(`cleaning_tasks?id=eq.${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({
       cleaner,
       start_time,
       end_time,
@@ -95,20 +159,13 @@ app.post("/cleaning/update", async (req, res) => {
       total_amount,
       notes,
       status,
-    });
+    }),
+  });
 
-    if (!success) {
-      return res.status(500).send("❌ Update failed");
-    }
-
-    res.send("✅ Cleaning updated");
-  } catch (err) {
-    console.error(err);
-    res.status(500).send("❌ Error");
-  }
+  res.send("✅ Cleaning updated");
 });
 
 // ===== START =====
 app.listen(10000, () => {
-  console.log("🚀 CLEANING FIX READY");
+  console.log("🚀 SYSTEM READY");
 });
