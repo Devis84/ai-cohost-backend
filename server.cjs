@@ -1,4 +1,6 @@
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+const fetch = (...args) =>
+  import("node-fetch").then(({ default: fetch }) => fetch(...args));
+
 const express = require("express");
 const bodyParser = require("body-parser");
 const ical = require("node-ical");
@@ -11,7 +13,7 @@ const ICAL_URL = process.env.ICAL_URL;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
-// 👇 PROPERTY CONFIG (SCALABILE)
+// ===== PROPERTY CONFIG =====
 const PROPERTY = {
   id: "maltese_maisonette",
   name: "Maltese Maisonette",
@@ -41,27 +43,36 @@ async function bookingExists(checkin, checkout) {
 
 // ===== CREATE BOOKING =====
 async function createBooking(checkin, checkout) {
-  const exists = await bookingExists(checkin, checkout);
-  if (exists) return;
+  try {
+    const exists = await bookingExists(checkin, checkout);
+    if (exists) return;
 
-  const payload = {
-    guest_phone: "ical",
-    property_id: PROPERTY.id,
-    checkin,
-    checkout,
-  };
+    const payload = {
+      guest_phone: "ical",
+      property_id: PROPERTY.id,
+      checkin,
+      checkout,
+    };
 
-  const res = await supabaseFetch("bookings", {
-    method: "POST",
-    headers: { Prefer: "return=representation" },
-    body: JSON.stringify(payload),
-  });
+    const res = await supabaseFetch("bookings", {
+      method: "POST",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(payload),
+    });
 
-  const data = await res.json();
-  console.log("📅 Booking created:", data);
+    if (!res.ok) {
+      console.error("❌ Booking error:", await res.text());
+      return;
+    }
+
+    const data = await res.json();
+    console.log("📅 Booking created:", data);
+  } catch (err) {
+    console.error("❌ Booking exception:", err);
+  }
 }
 
-// ===== CLEANING =====
+// ===== CLEANING EXISTS =====
 async function cleaningExists(booking_id) {
   const res = await supabaseFetch(
     `cleaning_tasks?booking_id=eq.${booking_id}`
@@ -70,30 +81,44 @@ async function cleaningExists(booking_id) {
   return data.length > 0;
 }
 
+// ===== CREATE CLEANING =====
 async function createCleaningTask(booking) {
-  const exists = await cleaningExists(booking.id);
-  if (exists) return;
+  try {
+    const exists = await cleaningExists(booking.id);
+    if (exists) return;
 
-  const payload = {
-    property_id: booking.property_id,
-    booking_id: booking.id,
-    cleaning_date: booking.checkout,
-    status: "pending",
-  };
+    const payload = {
+      property_id: booking.property_id,
+      booking_id: booking.id,
+      cleaning_date: booking.checkout,
+      status: "pending",
+    };
 
-  const res = await supabaseFetch("cleaning_tasks", {
-    method: "POST",
-    headers: { Prefer: "return=representation" },
-    body: JSON.stringify(payload),
-  });
+    const res = await supabaseFetch("cleaning_tasks", {
+      method: "POST",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(payload),
+    });
 
-  const data = await res.json();
-  console.log("🧹 Cleaning created:", data);
+    if (!res.ok) {
+      console.error("❌ Cleaning error:", await res.text());
+      return;
+    }
+
+    const data = await res.json();
+    console.log("🧹 Cleaning created:", data);
+  } catch (err) {
+    console.error("❌ Cleaning exception:", err);
+  }
 }
 
 // ===== ICAL SYNC =====
 async function runIcalSync() {
   try {
+    if (!ICAL_URL) {
+      throw new Error("ICAL_URL missing");
+    }
+
     console.log("🔄 Syncing iCal for:", PROPERTY.name);
 
     const data = await ical.async.fromURL(ICAL_URL);
@@ -115,14 +140,18 @@ async function runIcalSync() {
 
 // ===== CLEANING SYNC =====
 async function runCleaningSync() {
-  const res = await supabaseFetch(
-    `bookings?property_id=eq.${PROPERTY.id}`
-  );
+  try {
+    const res = await supabaseFetch(
+      `bookings?property_id=eq.${PROPERTY.id}`
+    );
 
-  const bookings = await res.json();
+    const bookings = await res.json();
 
-  for (const booking of bookings) {
-    await createCleaningTask(booking);
+    for (const booking of bookings) {
+      await createCleaningTask(booking);
+    }
+  } catch (err) {
+    console.error("❌ Cleaning sync error:", err);
   }
 }
 
@@ -134,8 +163,13 @@ async function runFullSync() {
 
 // ===== MANUAL TEST =====
 app.get("/sync", async (req, res) => {
-  await runFullSync();
-  res.send("✅ Sync completed");
+  try {
+    await runFullSync();
+    res.send("✅ Sync completed");
+  } catch (err) {
+    console.error("❌ Sync error:", err);
+    res.status(500).send("❌ Sync failed");
+  }
 });
 
 // ===== SCHEDULER =====
