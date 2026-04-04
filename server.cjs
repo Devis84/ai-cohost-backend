@@ -8,16 +8,18 @@ const ical = require("node-ical");
 const app = express();
 app.use(bodyParser.json());
 
+// ===== CONFIG =====
 const ICAL_URL = process.env.ICAL_URL;
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
+
+const SUPABASE_URL = "https://mhmebkakdmwzqgteywyd.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1obWVibGFrZG13enFndGV5d3lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzMxMDg3ODQsImV4cCI6MjA0ODY4NDc4NH0.85TrSsRELJ5-30BUzf0LLymuYr-4arpOzEY";
 
 const PROPERTY = {
   id: "maltese_maisonette",
   name: "Maltese Maisonette",
 };
 
-// ===== SUPABASE =====
+// ===== SUPABASE FETCH =====
 async function supabaseFetch(path, options = {}) {
   return fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
@@ -109,6 +111,7 @@ async function runCleaningSync() {
   const res = await supabaseFetch(
     `bookings?property_id=eq.${PROPERTY.id}`
   );
+
   const bookings = await res.json();
 
   for (const booking of bookings) {
@@ -128,7 +131,7 @@ app.get("/sync", async (req, res) => {
   res.send("✅ Sync completed");
 });
 
-// ===== UPDATE CLEANING =====
+// ===== CALCULATE =====
 function calculateTotal(start, end, rate) {
   if (!start || !end || !rate) return null;
 
@@ -139,6 +142,7 @@ function calculateTotal(start, end, rate) {
   return Math.round(hours * rate * 100) / 100;
 }
 
+// ===== UPDATE CLEANING =====
 app.post("/cleaning/update", async (req, res) => {
   const { id, cleaner, start_time, end_time, hourly_rate, notes, status } =
     req.body;

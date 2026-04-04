@@ -1,0 +1,101 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta http-equiv="Content-Style-Type" content="text/css">
+  <title></title>
+  <meta name="Generator" content="Cocoa HTML Writer">
+  <meta name="CocoaVersion" content="2685.4">
+  <style type="text/css">
+    p.p1 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Helvetica}
+    p.p2 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Helvetica; min-height: 14.0px}
+  </style>
+</head>
+<body>
+<p class="p1">&lt;!DOCTYPE html&gt;</p>
+<p class="p1">&lt;html&gt;</p>
+<p class="p1">&lt;head&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;title&gt;Cleaning Dashboard&lt;/title&gt;</p>
+<p class="p1">&lt;/head&gt;</p>
+<p class="p1">&lt;body&gt;</p>
+<p class="p2"><br></p>
+<p class="p1">&lt;h1&gt;🧹 Cleaning Dashboard&lt;/h1&gt;</p>
+<p class="p1">&lt;div id="tasks"&gt;&lt;/div&gt;</p>
+<p class="p2"><br></p>
+<p class="p1">&lt;script&gt;</p>
+<p class="p1">const SUPABASE_URL = "https://mhmebkakdmwzqgteywyd.supabase.co";</p>
+<p class="p1">const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1obWVibGFrZG13enFndGV5d3lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzMxMDg3ODQsImV4cCI6MjA0ODY4NDc4NH0.85TrSsRELJ5-30BUzf0LLymuYr-4arpOzEY";</p>
+<p class="p2"><br></p>
+<p class="p1">const API = "https://ai-cohost-backend.onrender.com";</p>
+<p class="p2"><br></p>
+<p class="p1">// ===== LOAD TASKS =====</p>
+<p class="p1">async function loadTasks() {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>const res = await fetch(</p>
+<p class="p1"><span class="Apple-converted-space">    </span>`${SUPABASE_URL}/rest/v1/cleaning_tasks?select=*`,</p>
+<p class="p1"><span class="Apple-converted-space">    </span>{</p>
+<p class="p1"><span class="Apple-converted-space">      </span>headers: {</p>
+<p class="p1"><span class="Apple-converted-space">        </span>apikey: SUPABASE_KEY,</p>
+<p class="p1"><span class="Apple-converted-space">        </span>Authorization: `Bearer ${SUPABASE_KEY}`</p>
+<p class="p1"><span class="Apple-converted-space">      </span>}</p>
+<p class="p1"><span class="Apple-converted-space">    </span>}</p>
+<p class="p1"><span class="Apple-converted-space">  </span>);</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">  </span>const data = await res.json();</p>
+<p class="p1"><span class="Apple-converted-space">  </span>const container = document.getElementById("tasks");</p>
+<p class="p1"><span class="Apple-converted-space">  </span>container.innerHTML = "";</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">  </span>data.forEach(task =&gt; {</p>
+<p class="p1"><span class="Apple-converted-space">    </span>const div = document.createElement("div");</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>div.innerHTML = `</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;hr&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;b&gt;${task.cleaning_date}&lt;/b&gt;&lt;br&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>ID: ${task.id}&lt;br&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;input placeholder="Cleaner" id="c-${task.id}"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;input placeholder="Start" id="s-${task.id}"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;input placeholder="End" id="e-${task.id}"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;input placeholder="Rate" id="r-${task.id}"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;input placeholder="Notes" id="n-${task.id}"&gt;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">      </span>&lt;button onclick="update('${task.id}')"&gt;UPDATE&lt;/button&gt;</p>
+<p class="p1"><span class="Apple-converted-space">    </span>`;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>container.appendChild(div);</p>
+<p class="p1"><span class="Apple-converted-space">  </span>});</p>
+<p class="p1">}</p>
+<p class="p2"><br></p>
+<p class="p1">// ===== UPDATE =====</p>
+<p class="p1">async function update(id) {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>const cleaner = document.getElementById(`c-${id}`).value;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>const start = document.getElementById(`s-${id}`).value;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>const end = document.getElementById(`e-${id}`).value;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>const rate = document.getElementById(`r-${id}`).value;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>const notes = document.getElementById(`n-${id}`).value;</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">  </span>await fetch(`${API}/cleaning/update`, {</p>
+<p class="p1"><span class="Apple-converted-space">    </span>method: "POST",</p>
+<p class="p1"><span class="Apple-converted-space">    </span>headers: {"Content-Type": "application/json"},</p>
+<p class="p1"><span class="Apple-converted-space">    </span>body: JSON.stringify({</p>
+<p class="p1"><span class="Apple-converted-space">      </span>id,</p>
+<p class="p1"><span class="Apple-converted-space">      </span>cleaner,</p>
+<p class="p1"><span class="Apple-converted-space">      </span>start_time: start,</p>
+<p class="p1"><span class="Apple-converted-space">      </span>end_time: end,</p>
+<p class="p1"><span class="Apple-converted-space">      </span>hourly_rate: Number(rate),</p>
+<p class="p1"><span class="Apple-converted-space">      </span>notes,</p>
+<p class="p1"><span class="Apple-converted-space">      </span>status: "done"</p>
+<p class="p1"><span class="Apple-converted-space">    </span>})</p>
+<p class="p1"><span class="Apple-converted-space">  </span>});</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">  </span>alert("Updated");</p>
+<p class="p1"><span class="Apple-converted-space">  </span>loadTasks();</p>
+<p class="p1">}</p>
+<p class="p2"><br></p>
+<p class="p1">// INIT</p>
+<p class="p1">loadTasks();</p>
+<p class="p1">&lt;/script&gt;</p>
+<p class="p2"><br></p>
+<p class="p1">&lt;/body&gt;</p>
+<p class="p1">&lt;/html&gt;</p>
+</body>
+</html>
